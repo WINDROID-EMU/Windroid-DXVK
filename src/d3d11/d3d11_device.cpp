@@ -3889,6 +3889,11 @@ namespace dxvk {
     if (riid == GUID{0xd56e2a4c,0x5127,0x8437,{0x65,0x8a,0x98,0xc5,0xbb,0x78,0x94,0x98}})
       return E_NOINTERFACE;
     
+    // ID3D12CommandQueue - prevent games from crashing when querying for D3D9On12 support
+    // GUID 0ec870a6-5d7e-4c22-8cfc-5baae07616ed
+    if (riid == GUID{0x0ec870a6,0x5d7e,0x4c22,{0x8c,0xfc,0x5b,0xaa,0xe0,0x76,0x16,0xed}})
+      return E_NOINTERFACE;
+    
     if (logQueryInterfaceError(__uuidof(IDXGIDXVKDevice), riid)) {
       Logger::warn("D3D11DXGIDevice::QueryInterface: Unknown interface query");
       Logger::warn(str::format(riid));
