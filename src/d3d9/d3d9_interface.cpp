@@ -15,12 +15,11 @@ namespace dxvk {
   Singleton<DxvkInstance> g_dxvkInstance;
 
   D3D9InterfaceEx::D3D9InterfaceEx(bool bExtended, const D3D9ON12_ARGS* pOverrideList, uint32_t OverrideCount)
-    : m_instance    ( g_dxvkInstance.acquire(DxvkInstanceFlag::ClientApiIsD3D9) )
-    , m_d3d8Bridge  ( this )
-    , m_extended    ( bExtended ) 
-    , m_d3d9Options ( nullptr, m_instance->config() )
-    , m_d3d9Interop ( this )
-    , m_d3d9ExtInterface( this ) {
+    : m_instance           ( g_dxvkInstance.acquire(DxvkInstanceFlag::ClientApiIsD3D9) )
+    , m_legacyD3DBridge    ( this )
+    , m_d3d9Options        ( nullptr, m_instance->config() )
+    , m_d3d9Interop        ( this )
+    , m_d3d9VkExtInterface ( this ) {
     // D3D9 doesn't enumerate adapters like physical adapters...
     // only as connected displays.
 
@@ -51,7 +50,7 @@ namespace dxvk {
 
         if (adapter != nullptr) {
           const auto* d3d9On12Args = Find9On12Args(adapter, pOverrideList, OverrideCount);
-          m_adapters.emplace_back(this, d3d9On12Args, adapter, adapterOrdinal++, i - 1);
+          m_adapters.emplace_back(new D3D9Adapter(this, d3d9On12Args, m_instance, adapter, adapterOrdinal++, i - 1));
         }
       }
     }
@@ -63,7 +62,7 @@ namespace dxvk {
 
       for (uint32_t i = 0; i < adapterCount; i++) {
         const auto* d3d9On12Args = Find9On12Args(m_instance->enumAdapters(i), pOverrideList, OverrideCount);
-        m_adapters.emplace_back(this, d3d9On12Args, m_instance->enumAdapters(i), i, 0);
+        m_adapters.emplace_back(new D3D9Adapter(this, d3d9On12Args, m_instance, m_instance->enumAdapters(i), i, 0));
       }
     }
 
@@ -74,8 +73,13 @@ namespace dxvk {
     }
 #endif
 
+    if (bExtended) {
+      m_d3dCompatibility.set(D3DCompatibility::D3D9Ex);
+      Logger::info("The D3D9 interface is operating in D3D9Ex mode.");
+    }
+
     if (unlikely(m_d3d9Options.shaderModel == 0))
-      Logger::warn("D3D9InterfaceEx: WARNING! Fixed-function exclusive mode is enabled.");
+      Logger::warn("WARNING! Fixed-function exclusive mode is enabled.");
   }
 
 
@@ -92,13 +96,14 @@ namespace dxvk {
 
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(IDirect3D9)
-     || (m_extended && riid == __uuidof(IDirect3D9Ex))) {
+     || (m_d3dCompatibility.test(D3DCompatibility::D3D9Ex) &&
+         riid == __uuidof(IDirect3D9Ex))) {
       *ppvObject = ref(this);
       return S_OK;
     }
 
-    if (riid == __uuidof(IDxvkD3D8InterfaceBridge)) {
-      *ppvObject = ref(&m_d3d8Bridge);
+    if (riid == __uuidof(IDxvkLegacyD3DInterfaceBridge)) {
+      *ppvObject = ref(&m_legacyD3DBridge);
       return S_OK;
     }
 
@@ -109,7 +114,7 @@ namespace dxvk {
     }
 
     if (riid == __uuidof(ID3D9VkExtInterface)) {
-      *ppvObject = ref(&m_d3d9ExtInterface);
+      *ppvObject = ref(&m_d3d9VkExtInterface);
       return S_OK;
     }
 
@@ -149,7 +154,7 @@ namespace dxvk {
     filter.Size             = sizeof(D3DDISPLAYMODEFILTER);
     filter.Format           = Format;
     filter.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
-    
+
     return this->GetAdapterModeCountEx(Adapter, &filter);
   }
 
@@ -213,7 +218,7 @@ namespace dxvk {
           D3DFORMAT           SurfaceFormat,
           BOOL                Windowed,
           D3DMULTISAMPLE_TYPE MultiSampleType,
-          DWORD*              pQualityLevels) { 
+          DWORD*              pQualityLevels) {
     if (auto* adapter = GetAdapter(Adapter))
       return adapter->CheckDeviceMultiSampleType(
         DeviceType, EnumerateFormat(SurfaceFormat),
@@ -472,7 +477,7 @@ namespace dxvk {
     if (unlikely(pPresentationParameters == nullptr))
       return D3DERR_INVALIDCALL;
 
-    if (m_extended) {
+    if (m_d3dCompatibility.test(D3DCompatibility::D3D9Ex)) {
       // The swap effect value on a D3D9Ex device
       // can not be higher than D3DSWAPEFFECT_FLIPEX.
       if (unlikely(pPresentationParameters->SwapEffect > D3DSWAPEFFECT_FLIPEX))
@@ -500,7 +505,7 @@ namespace dxvk {
     // Allow D3DSWAPEFFECT_COPY to bypass this restriction in D3D8 compatibility
     // mode, since it may be a remapping of D3DSWAPEFFECT_COPY_VSYNC and RC Cars
     // depends on it not being validated.
-    if (unlikely(!IsD3D8Compatible()
+    if (unlikely(!m_d3dCompatibility.test(D3DCompatibility::D3D8)
               && pPresentationParameters->SwapEffect == D3DSWAPEFFECT_COPY
               && pPresentationParameters->BackBufferCount > 1))
       return D3DERR_INVALIDCALL;
@@ -535,15 +540,15 @@ namespace dxvk {
 #ifdef _WIN32
     for (uint32_t i = 0u; i < OverrideCount; i++) {
       if (pOverrides[i].pD3D12Device) {
-        const auto& vk11 = Adapter->deviceProperties().vk11;
+        auto info = Adapter->info();
 
-        if (vk11.deviceLUIDValid) {
+        if (info.luidIsValid) {
           Com<ID3D12Device> device = nullptr;
 
           if (SUCCEEDED(pOverrides[i].pD3D12Device->QueryInterface(__uuidof(ID3D12Device), reinterpret_cast<void**>(&device)))) {
             LUID luid = device->GetAdapterLuid();
 
-            if (!std::memcmp(&luid, vk11.deviceLUID, sizeof(vk11.deviceLUID)))
+            if (!std::memcmp(&luid, info.deviceLuid, sizeof(info.deviceLuid)))
               arg = &pOverrides[i];
           }
         }

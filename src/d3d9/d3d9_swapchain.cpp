@@ -84,7 +84,8 @@ namespace dxvk {
 
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(IDirect3DSwapChain9)
-     || (GetParent()->IsExtended() && riid == __uuidof(IDirect3DSwapChain9Ex))) {
+     || (m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex) &&
+         riid == __uuidof(IDirect3DSwapChain9Ex))) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -342,7 +343,7 @@ namespace dxvk {
     if (!similar || srcImage->info().extent != dstTexInfo->GetExtent()) {
       DxvkImageCreateInfo blitCreateInfo;
       blitCreateInfo.type          = VK_IMAGE_TYPE_2D;
-      blitCreateInfo.format        = dstTexInfo->GetFormatMapping().FormatColor;
+      blitCreateInfo.format        = dstTexInfo->GetFormatMapping().Format;
       blitCreateInfo.flags         = 0;
       blitCreateInfo.sampleCount   = VK_SAMPLE_COUNT_1_BIT;
       blitCreateInfo.extent        = dstTexInfo->GetExtent();
@@ -1042,10 +1043,12 @@ namespace dxvk {
     // we might need to lock for the BlitGDI fallback path
     desc.IsLockable         = true;
 
+    const bool isExtended = m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex);
+
     for (uint32_t i = 0; i < bufferCount; i++) {
       D3D9Surface* surface;
       try {
-        surface = new D3D9Surface(m_parent, &desc, m_parent->IsExtended(), this, nullptr);
+        surface = new D3D9Surface(m_parent, &desc, isExtended, this, nullptr);
         m_parent->IncrementLosableCounter();
       } catch (const DxvkError& e) {
         DestroyBackBuffers();
@@ -1084,10 +1087,9 @@ namespace dxvk {
       if (m_latencyTracking)
         m_latencyHud = hud->addItem<hud::HudLatencyItem>("latency", 4);
 
-      hud->addItem<hud::HudFixedFunctionShaders>("ffshaders", -1, m_parent);
       hud->addItem<hud::HudSWVPState>("swvp", -1, m_parent);
 
-#ifdef D3D9_ALLOW_UNMAPPING
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
       hud->addItem<hud::HudTextureMemory>("memory", -1, m_parent);
 #endif
     }
@@ -1177,10 +1179,10 @@ namespace dxvk {
 
       case D3D9Format::X1R5G5B5:
       case D3D9Format::A1R5G5B5:
-        return { VK_FORMAT_B5G5R5A1_UNORM_PACK16, m_colorspace };
+        return { VK_FORMAT_A1R5G5B5_UNORM_PACK16, m_colorspace };
 
       case D3D9Format::R5G6B5:
-        return { VK_FORMAT_B5G6R5_UNORM_PACK16, m_colorspace };
+        return { VK_FORMAT_R5G6B5_UNORM_PACK16, m_colorspace };
 
       case D3D9Format::A16B16G16R16F: {
         if (!m_parent->HasFormatsUnlocked()) {
@@ -1332,10 +1334,9 @@ namespace dxvk {
       m_srcRect.left   = 0;
       m_srcRect.right  = m_presentParams.BackBufferWidth;
       m_srcRect.bottom = m_presentParams.BackBufferHeight;
-    }
-    else
+    } else {
       m_srcRect = *pSourceRect;
-
+    }
     
     UINT width, height;
     wsi::getWindowSize(m_window, &width, &height);
@@ -1347,10 +1348,9 @@ namespace dxvk {
       dstRect.left   = 0;
       dstRect.right  = LONG(width);
       dstRect.bottom = LONG(height);
-      
-    }
-    else
+    } else {
       dstRect = *pDestRect;
+    }
 
     m_partialCopy =
        dstRect.left != 0
@@ -1375,11 +1375,11 @@ namespace dxvk {
 
 
   std::string D3D9SwapChainEx::GetApiName() {
-    if (this->GetParent()->Is9On12Device())
-      return this->GetParent()->IsExtended() ? "D3D9On12Ex" : "D3D9On12";
+    if (m_parent->Is9On12Device())
+      return m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex) ? "D3D9ExOn12" : "D3D9On12";
 
-    return this->GetParent()->IsD3D8Compatible() ? "D3D8" :
-           this->GetParent()->IsExtended() ? "D3D9Ex" : "D3D9";
+    return m_parent->IsD3DCompatibile(D3DCompatibility::D3D8) ? "D3D8" :
+           m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex) ? "D3D9Ex" : "D3D9";
   }
 
 

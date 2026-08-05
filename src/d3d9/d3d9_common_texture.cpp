@@ -39,8 +39,8 @@ namespace dxvk {
 
     m_mapMode        = DetermineMapMode();
     m_shadow         = DetermineShadowState();
-    m_upgradedToD32f = ConvertFormatUnfixed(m_desc.Format).FormatColor != m_mapping.FormatColor &&
-                       (m_mapping.FormatColor == VK_FORMAT_D32_SFLOAT_S8_UINT || m_mapping.FormatColor == VK_FORMAT_D32_SFLOAT);
+    m_upgradedToD32f = ConvertFormatUnfixed(m_desc.Format).Format != m_mapping.Format &&
+                       (m_mapping.Format == VK_FORMAT_D32_SFLOAT_S8_UINT || m_mapping.Format == VK_FORMAT_D32_SFLOAT);
     m_supportsFetch4 = DetermineFetch4Compatibility();
 
     if (TextureUsesImage(&m_desc)) {
@@ -95,7 +95,7 @@ namespace dxvk {
 
     // Initialization is handled by D3D9Initializer
     if (m_mapMode == D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE)
-      m_data = m_device->GetAllocator()->Alloc(paddedSize);
+      m_data = MemoryFileRegion(*m_device->GetAllocator(), paddedSize);
     else if (m_mapMode != D3D9_COMMON_TEXTURE_MAP_MODE_NONE && m_desc.Pool != D3DPOOL_DEFAULT)
       CreateBuffer(false, paddedSize);
   }
@@ -139,9 +139,12 @@ namespace dxvk {
         options->disableA8RT)
       return D3DERR_INVALIDCALL;
 
-    // Cube textures with depth formats are not supported on any native
+    // Cube textures with depth formats are not supported on any modern native
     // driver, and allowing them triggers a broken code path in Gothic 3.
-    if (ResourceType == D3DRTYPE_CUBETEXTURE && mapping.Aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+    // Older drivers, however, both exposed support and allowed their use, and
+    // games such as SimCity Societies: Destinations will crash on startup otherwise.
+    if (ResourceType == D3DRTYPE_CUBETEXTURE && mapping.Aspect != VK_IMAGE_ASPECT_COLOR_BIT
+     && !options->supportCubeDepthFormats)
       return D3DERR_INVALIDCALL;
 
     // If the mapping is invalid then lets return invalid
@@ -160,10 +163,12 @@ namespace dxvk {
     ///////////////////
     // Desc Validation
 
+    const bool isExtended = pDevice->IsD3DCompatibile(D3DCompatibility::D3D9Ex);
+
     // Resources can't be created in D3DPOOL_MANAGED
     // when using extended devices. Note that the D3DPOOL
     // value of 6 (D3DPOOL_MANAGED_EX) can be used.
-    if (pDevice->IsExtended() && pDesc->Pool == D3DPOOL_MANAGED)
+    if (isExtended && pDesc->Pool == D3DPOOL_MANAGED)
       return D3DERR_INVALIDCALL;
 
     if (pDesc->Width == 0 || pDesc->Height == 0 || pDesc->Depth == 0)
@@ -259,7 +264,7 @@ namespace dxvk {
     // plain surfaces outside of D3DPOOL_SCRATCH in D3D9Ex
     if (pDesc->Format == D3D9Format::ATI2
      && (pDesc->Usage & D3DUSAGE_RENDERTARGET ||
-        (pDevice->IsExtended() && isPlainSurface && pDesc->Pool != D3DPOOL_SCRATCH)))
+        (isExtended && isPlainSurface && pDesc->Pool != D3DPOOL_SCRATCH)))
       return D3DERR_INVALIDCALL;
 
     // Auto-Mipgen is only valid on textures (for obvious reasons)
@@ -298,13 +303,14 @@ namespace dxvk {
 
 
   void* D3D9CommonTexture::GetData(UINT Subresource) {
-    if (unlikely(m_buffer != nullptr))
+    if (unlikely(m_buffer))
       return m_buffer->mapPtr(m_memoryOffset[Subresource]);
 
-    m_data.Map();
-    uint8_t* ptr = reinterpret_cast<uint8_t*>(m_data.Ptr());
-    if (ptr == nullptr)
+    uint8_t* ptr = reinterpret_cast<uint8_t*>(m_data.map());
+
+    if (!ptr)
       return nullptr;
+
     ptr += m_memoryOffset[Subresource];
     return ptr;
   }
@@ -338,12 +344,10 @@ namespace dxvk {
     m_buffer = m_device->GetDXVKDevice()->createBuffer(info, memType);
 
     if (Initialize) {
-      if (m_data) {
-        m_data.Map();
-        std::memcpy(m_buffer->mapPtr(0), m_data.Ptr(), m_totalSize);
-      } else {
+      if (m_data)
+        std::memcpy(m_buffer->mapPtr(0), m_data.map(), m_totalSize);
+      else
         std::memset(m_buffer->mapPtr(0), 0, m_totalSize);
-      }
     }
     m_data = {};
   }
@@ -352,8 +356,8 @@ namespace dxvk {
   VkDeviceSize D3D9CommonTexture::GetMipSize(UINT Subresource) const {
     const UINT MipLevel = Subresource % m_desc.MipLevels;
 
-    const DxvkFormatInfo* formatInfo = m_mapping.FormatColor != VK_FORMAT_UNDEFINED
-      ? lookupFormatInfo(m_mapping.FormatColor)
+    const DxvkFormatInfo* formatInfo = m_mapping.Format != VK_FORMAT_UNDEFINED
+      ? lookupFormatInfo(m_mapping.Format)
       : m_device->UnsupportedFormatInfo(m_desc.Format);
 
     const VkExtent3D mipExtent = util::computeMipLevelExtent(
@@ -382,9 +386,9 @@ namespace dxvk {
   Rc<DxvkImage> D3D9CommonTexture::CreatePrimaryImage(D3DRESOURCETYPE ResourceType, HANDLE* pSharedHandle) const {
     DxvkImageCreateInfo imageInfo;
     imageInfo.type            = GetImageTypeFromResourceType(ResourceType);
-    imageInfo.format          = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
-                              ? m_mapping.ConversionFormatInfo.FormatColor
-                              : m_mapping.FormatColor;
+    imageInfo.format          = m_mapping.ConversionFormatInfo.Format != VK_FORMAT_UNDEFINED
+                              ? m_mapping.ConversionFormatInfo.Format
+                              : m_mapping.Format;
     imageInfo.flags           = 0;
     imageInfo.sampleCount     = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.extent.width    = m_desc.Width;
@@ -426,7 +430,7 @@ namespace dxvk {
     // The image must be marked as mutable if it can be reinterpreted
     // by a view with a different format. Depth-stencil formats cannot
     // be reinterpreted in Vulkan, so we'll ignore those.
-    auto formatProperties = lookupFormatInfo(m_mapping.FormatColor);
+    auto formatProperties = lookupFormatInfo(m_mapping.Format);
 
     bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
@@ -598,7 +602,7 @@ namespace dxvk {
     if (m_desc.Format == D3D9Format::NULL_FORMAT)
       return D3D9_COMMON_TEXTURE_MAP_MODE_NONE;
 
-#ifdef D3D9_ALLOW_UNMAPPING
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
     if (m_device->GetOptions()->textureMemory != 0 && m_desc.Pool != D3DPOOL_DEFAULT)
       return D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE;
 #endif
@@ -707,13 +711,14 @@ namespace dxvk {
           VkImageLayout          Layout,
           bool                   Srgb) {
     DxvkImageViewKey viewInfo;
-    viewInfo.format    = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
-                       ? PickSRGB(m_mapping.ConversionFormatInfo.FormatColor, m_mapping.ConversionFormatInfo.FormatSrgb, Srgb)
-                       : PickSRGB(m_mapping.FormatColor, m_mapping.FormatSrgb, Srgb);
+    viewInfo.format    = m_mapping.ConversionFormatInfo.Format != VK_FORMAT_UNDEFINED
+                       ? PickSRGB(m_mapping.ConversionFormatInfo.Format, m_mapping.ConversionFormatInfo.FormatSrgb, Srgb)
+                       : PickSRGB(m_mapping.Format, m_mapping.FormatSrgb, Srgb);
     viewInfo.layout    = Layout;
     viewInfo.aspects   = lookupFormatInfo(viewInfo.format)->aspectMask;
     viewInfo.usage     = UsageFlags;
     viewInfo.viewType  = GetImageViewTypeFromResourceType(m_type, Layer);
+    viewInfo.allowTypeMismatch = !(UsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT);
     viewInfo.mipIndex  = Lod;
     viewInfo.mipCount  = m_desc.MipLevels - Lod;
     viewInfo.layerIndex = Layer == AllLayers ? 0 : Layer;
@@ -802,8 +807,8 @@ namespace dxvk {
 
   
   uint32_t D3D9CommonTexture::GetPlaneCount() const {
-    const DxvkFormatInfo* formatInfo = m_mapping.FormatColor != VK_FORMAT_UNDEFINED
-      ? lookupFormatInfo(m_mapping.FormatColor)
+    const DxvkFormatInfo* formatInfo = m_mapping.Format != VK_FORMAT_UNDEFINED
+      ? lookupFormatInfo(m_mapping.Format)
       : m_device->UnsupportedFormatInfo(m_desc.Format);
 
     return vk::getPlaneCount(formatInfo->aspectMask);

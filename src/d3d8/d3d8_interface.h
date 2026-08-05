@@ -151,11 +151,12 @@ namespace dxvk {
 
       d3d9::D3DCAPS9 caps9;
       HRESULT res = m_d3d9->GetDeviceCaps(Adapter, d3d9::D3DDEVTYPE(DeviceType), &caps9);
+      if (unlikely(FAILED(res)))
+        return res;
 
-      if (likely(SUCCEEDED(res)))
-        ConvertCaps8(caps9, pCaps);
+      ConvertCaps8(caps9, pCaps);
 
-      return res;
+      return D3D_OK;
     }
 
     HMONITOR STDMETHODCALLTYPE GetAdapterMonitor(UINT Adapter) {
@@ -182,7 +183,7 @@ namespace dxvk {
     std::vector<std::vector<d3d9::D3DDISPLAYMODE>>  m_adapterModes;
 
     Com<d3d9::IDirect3D9>                           m_d3d9;
-    Com<IDxvkD3D8InterfaceBridge>                   m_bridge;
+    Com<IDxvkLegacyD3DInterfaceBridge>              m_bridge;
     D3D8Options                                     m_d3d8Options;
   };
 

@@ -34,9 +34,14 @@ namespace dxvk {
   VkDescriptorSet DxvkDescriptorPool::alloc(
           uint64_t                  trackingId,
     const DxvkDescriptorSetLayout*  layout) {
-    auto vk = m_device->vkd();
+    return alloc(trackingId, layout->getSetLayout());
+  }
 
-    VkDescriptorSetLayout setLayout = layout->getSetLayout();
+
+  VkDescriptorSet DxvkDescriptorPool::alloc(
+          uint64_t                  trackingId,
+          VkDescriptorSetLayout     layout) {
+    auto vk = m_device->vkd();
 
     VkResult vr = VK_ERROR_OUT_OF_POOL_MEMORY;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -44,7 +49,7 @@ namespace dxvk {
     VkDescriptorSetAllocateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     info.descriptorPool = m_pool.second.pool;
     info.descriptorSetCount = 1u;
-    info.pSetLayouts = &setLayout;
+    info.pSetLayouts = &layout;
 
     if (likely(info.descriptorPool))
       vr = vk->vkAllocateDescriptorSets(vk->device(), &info, &set);
@@ -136,13 +141,14 @@ namespace dxvk {
     // assume that all other descriptor types share pool memory.
     constexpr static uint32_t MaxSets = 1024u;
 
-    static const std::array<VkDescriptorPoolSize, 6> pools = {{
-      { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          MaxSets / 2  },
-      { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          MaxSets / 64 },
-      { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,   MaxSets / 2  },
-      { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   MaxSets / 64 },
-      { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         MaxSets * 2  },
-      { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         MaxSets / 2  },
+    static const std::array<VkDescriptorPoolSize, 7u> pools = {{
+      { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          MaxSets / 2   },
+      { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          MaxSets / 4   },
+      { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,   MaxSets / 2   },
+      { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   MaxSets / 4   },
+      { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         MaxSets * 2   },
+      { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         MaxSets / 2   },
+      { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       MaxSets / 64  },
     }};
 
     VkDescriptorPoolCreateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };

@@ -38,6 +38,7 @@ namespace dxvk {
     VkPhysicalDeviceSampleLocationsPropertiesEXT              extSampleLocations              = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT };
     VkPhysicalDeviceTransformFeedbackPropertiesEXT            extTransformFeedback            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT };
     VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT       extVertexAttributeDivisor       = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT };
+    VkPhysicalDeviceFaultPropertiesKHR                        khrDeviceFault                  = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_PROPERTIES_KHR };
     VkPhysicalDeviceMaintenance5PropertiesKHR                 khrMaintenance5                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES_KHR };
     VkPhysicalDeviceMaintenance6PropertiesKHR                 khrMaintenance6                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_PROPERTIES_KHR };
     VkPhysicalDeviceMaintenance7PropertiesKHR                 khrMaintenance7                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_PROPERTIES_KHR };
@@ -66,6 +67,7 @@ namespace dxvk {
     VkPhysicalDeviceDepthBiasControlFeaturesEXT               extDepthBiasControl             = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT };
     VkPhysicalDeviceDescriptorBufferFeaturesEXT               extDescriptorBuffer             = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT };
     VkPhysicalDeviceDescriptorHeapFeaturesEXT                 extDescriptorHeap               = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT };
+    VkPhysicalDeviceDynamicRenderingUnusedAttachmentsFeaturesEXT extDynamicRenderingUnusedAttachments = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT };
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT          extExtendedDynamicState3        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT };
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT        extFragmentShaderInterlock      = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT };
     VkBool32                                                  extFullScreenExclusive          = VK_FALSE;
@@ -85,6 +87,8 @@ namespace dxvk {
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT          extSwapchainMaintenance1        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT };
     VkPhysicalDeviceTransformFeedbackFeaturesEXT              extTransformFeedback            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT };
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT         extVertexAttributeDivisor       = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES };
+    VkPhysicalDeviceFaultFeaturesKHR                          khrDeviceFault                  = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR };
+    VkPhysicalDeviceDynamicRenderingLocalReadFeatures         khrDynamicRenderingLocalRead    = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR };
     VkBool32                                                  khrExternalMemoryWin32          = VK_FALSE;
     VkBool32                                                  khrExternalSemaphoreWin32       = VK_FALSE;
     VkBool32                                                  khrLoadStoreOpNone              = VK_FALSE;
@@ -94,6 +98,7 @@ namespace dxvk {
     VkPhysicalDeviceMaintenance8FeaturesKHR                   khrMaintenance8                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR };
     VkPhysicalDeviceMaintenance9FeaturesKHR                   khrMaintenance9                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_9_FEATURES_KHR };
     VkPhysicalDeviceMaintenance10FeaturesKHR                  khrMaintenance10                = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_10_FEATURES_KHR };
+    VkPhysicalDeviceMaintenance11FeaturesKHR                  khrMaintenance11                = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_11_FEATURES_KHR };
     VkBool32                                                  khrPipelineLibrary              = VK_FALSE;
     VkPhysicalDevicePresentIdFeaturesKHR                      khrPresentId                    = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
     VkPhysicalDevicePresentId2FeaturesKHR                     khrPresentId2                   = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
@@ -107,6 +112,8 @@ namespace dxvk {
     VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR            khrUnifiedImageLayouts          = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR };
     VkBool32                                                  khrSwapchainMutableFormat       = VK_FALSE;
     VkBool32                                                  khrWin32KeyedMutex              = VK_FALSE;
+    VkBool32                                                  amdBufferMarker                 = VK_FALSE;
+    VkBool32                                                  nvDeviceDiagnosticCheckpoints   = VK_FALSE;
     VkBool32                                                  nvLowLatency2                   = VK_FALSE;
     VkPhysicalDeviceRawAccessChainsFeaturesNV                 nvRawAccessChains               = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAW_ACCESS_CHAINS_FEATURES_NV };
     VkBool32                                                  nvxBinaryImport                 = VK_FALSE;
@@ -135,6 +142,7 @@ namespace dxvk {
     VkExtensionProperties extDepthBiasControl               = vk::makeExtension(VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME);
     VkExtensionProperties extDescriptorBuffer               = vk::makeExtension(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     VkExtensionProperties extDescriptorHeap                 = vk::makeExtension(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    VkExtensionProperties extDynamicRenderingUnusedAttachments = vk::makeExtension(VK_EXT_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_EXTENSION_NAME);
     VkExtensionProperties extExtendedDynamicState3          = vk::makeExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
     VkExtensionProperties extFragmentShaderInterlock        = vk::makeExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
     VkExtensionProperties extFullScreenExclusive            = vk::makeExtension(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
@@ -154,6 +162,8 @@ namespace dxvk {
     VkExtensionProperties extSwapchainMaintenance1          = vk::makeExtension(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
     VkExtensionProperties extTransformFeedback              = vk::makeExtension(VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
     VkExtensionProperties extVertexAttributeDivisor         = vk::makeExtension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    VkExtensionProperties khrDeviceFault                    = vk::makeExtension(VK_KHR_DEVICE_FAULT_EXTENSION_NAME);
+    VkExtensionProperties khrDynamicRenderingLocalRead      = vk::makeExtension(VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
     VkExtensionProperties khrExternalMemoryWin32            = vk::makeExtension(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
     VkExtensionProperties khrExternalSemaphoreWin32         = vk::makeExtension(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
     VkExtensionProperties khrLoadStoreOpNone                = vk::makeExtension(VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME);
@@ -163,6 +173,7 @@ namespace dxvk {
     VkExtensionProperties khrMaintenance8                   = vk::makeExtension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     VkExtensionProperties khrMaintenance9                   = vk::makeExtension(VK_KHR_MAINTENANCE_9_EXTENSION_NAME);
     VkExtensionProperties khrMaintenance10                  = vk::makeExtension(VK_KHR_MAINTENANCE_10_EXTENSION_NAME);
+    VkExtensionProperties khrMaintenance11                  = vk::makeExtension(VK_KHR_MAINTENANCE_11_EXTENSION_NAME);
     VkExtensionProperties khrPipelineLibrary                = vk::makeExtension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     VkExtensionProperties khrPresentId                      = vk::makeExtension(VK_KHR_PRESENT_ID_EXTENSION_NAME);
     VkExtensionProperties khrPresentId2                     = vk::makeExtension(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
@@ -176,6 +187,8 @@ namespace dxvk {
     VkExtensionProperties khrSwapchainMutableFormat         = vk::makeExtension(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);
     VkExtensionProperties khrUnifiedImageLayouts            = vk::makeExtension(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
     VkExtensionProperties khrWin32KeyedMutex                = vk::makeExtension(VK_KHR_WIN32_KEYED_MUTEX_EXTENSION_NAME);
+    VkExtensionProperties amdBufferMarker                   = vk::makeExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+    VkExtensionProperties nvDeviceDiagnosticCheckpoints     = vk::makeExtension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
     VkExtensionProperties nvLowLatency2                     = vk::makeExtension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
     VkExtensionProperties nvRawAccessChains                 = vk::makeExtension(VK_NV_RAW_ACCESS_CHAINS_EXTENSION_NAME);
     VkExtensionProperties nvxBinaryImport                   = vk::makeExtension(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
@@ -224,7 +237,8 @@ namespace dxvk {
     DxvkDeviceCapabilities(
       const DxvkInstance&               instance,
             VkPhysicalDevice            adapter,
-      const VkDeviceCreateInfo*         deviceInfo);
+      const VkDeviceCreateInfo*         deviceInfo,
+            bool                        safeMode = false);
 
     DxvkDeviceCapabilities(const DxvkDeviceCapabilities&) = delete;
 
@@ -343,6 +357,14 @@ namespace dxvk {
      */
     void logDeviceInfo();
 
+    /**
+     * \brief Decodes vendor-specific driver version into something readable
+     *
+     * \param [in] driverId Driver ID
+     * \param [in] version Raw Vulkan driver version
+     */
+    static Version decodeDriverVersion(VkDriverId driverId, uint32_t version);
+
   private:
 
     struct FeatureEntry {
@@ -400,7 +422,8 @@ namespace dxvk {
             VkPhysicalDevice            adapter);
 
     void disableUnusedFeatures(
-      const DxvkInstance&               instance);
+      const DxvkInstance&               instance,
+            bool                        safeMode);
 
     void enableFeaturesAndExtensions();
 
@@ -424,8 +447,6 @@ namespace dxvk {
             DxvkDeviceInfo&             properties);
 
     std::vector<FeatureEntry> getFeatureList();
-
-    static Version decodeDriverVersion(VkDriverId driverId, uint32_t version);
 
     template<typename T>
     static void copyFeature(

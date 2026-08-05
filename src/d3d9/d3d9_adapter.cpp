@@ -36,11 +36,13 @@ namespace dxvk {
   D3D9Adapter::D3D9Adapter(
           D3D9InterfaceEx* pParent,
     const D3D9ON12_ARGS*   p9On12Args,
+          Rc<DxvkInstance> Instance,
           Rc<DxvkAdapter>  Adapter,
           UINT             Ordinal,
           UINT             DisplayIndex)
   : m_parent          (pParent),
     m_adapter         (Adapter),
+    m_caps            (*Instance, Adapter->handle(), nullptr),
     m_ordinal         (Ordinal),
     m_displayIndex    (DisplayIndex),
     m_modeCacheFormat (D3D9Format::Unknown) {
@@ -78,12 +80,14 @@ namespace dxvk {
     copyToStringArray(pIdentifier->DeviceName,  displayName.c_str());    // The GDI device name. Not the actual device name.
     copyToStringArray(pIdentifier->Driver,      m_deviceDriver.c_str()); // This is the driver's dll.
 
+    const bool isExtended = m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex);
+
     pIdentifier->DeviceIdentifier       = m_deviceGuid;
     pIdentifier->DeviceId               = m_deviceId;
     pIdentifier->VendorId               = m_vendorId;
     pIdentifier->Revision               = 0;
     pIdentifier->SubSysId               = 0;
-    pIdentifier->WHQLLevel              = m_parent->IsExtended() ? 1 : 0; // This doesn't check with the driver on Direct3D9Ex and is always 1.
+    pIdentifier->WHQLLevel              = isExtended ? 1 : 0; // This doesn't check with the driver on Direct3D9Ex and is always 1.
     pIdentifier->DriverVersion.QuadPart = INT64_MAX;
 
     return D3D_OK;
@@ -120,7 +124,7 @@ namespace dxvk {
     if (!IsSupportedAdapterFormat(AdapterFormat))
       return D3DERR_NOTAVAILABLE;
 
-    const bool isD3D8Compatible = m_parent->IsD3D8Compatible();
+    const bool isD3D8Compatible = m_parent->IsD3DCompatibile(D3DCompatibility::D3D8);
     const bool isNvidia         = m_vendorId == uint32_t(DxvkGpuVendor::Nvidia);
     const bool isAmd            = m_vendorId == uint32_t(DxvkGpuVendor::Amd);
 
@@ -147,7 +151,9 @@ namespace dxvk {
     if (rt && volumeTexture)
       return D3DERR_NOTAVAILABLE;
 
-    if (unlikely(rt && CheckFormat == D3D9Format::A8 && m_parent->GetOptions().disableA8RT))
+    auto& options = m_parent->GetOptions();
+
+    if (unlikely(rt && CheckFormat == D3D9Format::A8 && options.disableA8RT))
       return D3DERR_NOTAVAILABLE;
 
     // NULL RT format hack (supported across all
@@ -180,8 +186,7 @@ namespace dxvk {
     // Nvidia specific depth bounds test hack
     // (supported ever since the GeForce 6 series)
     if (unlikely(CheckFormat == D3D9Format::NVDB && surface))
-      return (!isD3D8Compatible &&
-              m_adapter->features().core.features.depthBounds && isNvidia)
+      return (!isD3D8Compatible && m_caps.getFeatures().core.features.depthBounds && isNvidia)
         ? D3D_OK
         : D3DERR_NOTAVAILABLE;
 
@@ -212,7 +217,7 @@ namespace dxvk {
     }
 
     auto mapping = GetFormatMapping(CheckFormat);
-    if (mapping.FormatColor == VK_FORMAT_UNDEFINED)
+    if (mapping.Format == VK_FORMAT_UNDEFINED)
       return D3DERR_NOTAVAILABLE;
 
     const bool srgb = (Usage & (D3DUSAGE_QUERY_SRGBREAD | D3DUSAGE_QUERY_SRGBWRITE)) != 0;
@@ -220,14 +225,16 @@ namespace dxvk {
     if (mapping.FormatSrgb  == VK_FORMAT_UNDEFINED && srgb)
       return D3DERR_NOTAVAILABLE;
 
-    if (RType == D3DRTYPE_CUBETEXTURE && mapping.Aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+    if (RType == D3DRTYPE_CUBETEXTURE && mapping.Aspect != VK_IMAGE_ASPECT_COLOR_BIT
+     && !options.supportCubeDepthFormats)
       return D3DERR_NOTAVAILABLE;
 
     // Let's actually ask Vulkan now that we got some quirks out the way!
-    VkFormat format = mapping.FormatColor;
-    if (unlikely(mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED)) {
-      format = mapping.ConversionFormatInfo.FormatColor;
+    VkFormat format = mapping.Format;
+    if (unlikely(mapping.ConversionFormatInfo.Format != VK_FORMAT_UNDEFINED)) {
+      format = mapping.ConversionFormatInfo.Format;
     }
+
     return CheckDeviceVkFormat(format, Usage, RType);
   }
 
@@ -250,7 +257,7 @@ namespace dxvk {
     auto dst = ConvertFormatUnfixed(SurfaceFormat);
     // Wargame: European Escalation expects a D3DMULTISAMPLE_NONE
     // NULL format check to succeed, otherwise it will crash
-    if (SurfaceFormat != D3D9Format::NULL_FORMAT && dst.FormatColor == VK_FORMAT_UNDEFINED)
+    if (SurfaceFormat != D3D9Format::NULL_FORMAT && dst.Format == VK_FORMAT_UNDEFINED)
       return D3DERR_NOTAVAILABLE;
 
     if (MultiSampleType != D3DMULTISAMPLE_NONE
@@ -272,23 +279,28 @@ namespace dxvk {
       return D3DERR_NOTAVAILABLE;
 
     // Therefore...
+    const auto& properties = m_caps.getProperties();
+    const auto& features = m_caps.getFeatures();
+
     VkSampleCountFlags sampleFlags = VkSampleCountFlags(sampleCount);
 
     VkSampleCountFlags availableFlags;
-    if (dst.FormatColor == VK_FORMAT_UNDEFINED)
-      availableFlags = m_adapter->deviceProperties().core.properties.limits.framebufferDepthSampleCounts
-                     & m_adapter->deviceProperties().core.properties.limits.framebufferColorSampleCounts;
+    if (dst.Format == VK_FORMAT_UNDEFINED)
+      availableFlags = properties.core.properties.limits.framebufferDepthSampleCounts
+                     & properties.core.properties.limits.framebufferColorSampleCounts;
     else if (IsDepthStencilFormat(SurfaceFormat))
-      availableFlags = m_adapter->deviceProperties().core.properties.limits.framebufferDepthSampleCounts;
+      availableFlags = properties.core.properties.limits.framebufferDepthSampleCounts;
     else
-      availableFlags = m_adapter->deviceProperties().core.properties.limits.framebufferColorSampleCounts;
+      availableFlags = properties.core.properties.limits.framebufferColorSampleCounts;
 
-    if (!(availableFlags & sampleFlags) && dst.FormatColor != VK_FORMAT_UNDEFINED) {
+    if (!(availableFlags & sampleFlags) && dst.Format != VK_FORMAT_UNDEFINED) {
       // Adreno 7XX GPUs cannot report general support for 8x MSAA because they do not support it for 128 bit formats.
       // So take the format into consideration when checking whether the sample count is supported.
 
+      auto formatMapping = GetFormatMapping(SurfaceFormat);
+
       DxvkFormatQuery query = { };
-      query.format = dst.FormatColor;
+      query.format = formatMapping.Format;
       query.type   = VK_IMAGE_TYPE_2D; // D3D9 only allows using MSAA with 2D textures
       query.tiling = VK_IMAGE_TILING_OPTIMAL;
       query.usage  = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -305,7 +317,7 @@ namespace dxvk {
       if (dst.ConversionFormatInfo.FormatType != D3D9ConversionFormat_None)
         query.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 
-      if (m_adapter->features().extAttachmentFeedbackLoopLayout.attachmentFeedbackLoopLayout)
+      if (features.extAttachmentFeedbackLoopLayout.attachmentFeedbackLoopLayout)
         query.usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
 
       auto limits = m_adapter->getFormatLimits(query);
@@ -338,14 +350,14 @@ namespace dxvk {
       return D3DERR_NOTAVAILABLE;
 
     auto dsfMapping = GetFormatMapping(DepthStencilFormat);
-    if (dsfMapping.FormatColor == VK_FORMAT_UNDEFINED)
+    if (dsfMapping.Format == VK_FORMAT_UNDEFINED)
       return D3DERR_NOTAVAILABLE;
 
     if (RenderTargetFormat == dxvk::D3D9Format::NULL_FORMAT)
       return D3D_OK;
 
     auto rtfMapping = GetFormatMapping(RenderTargetFormat);
-    if (rtfMapping.FormatColor == VK_FORMAT_UNDEFINED)
+    if (rtfMapping.Format == VK_FORMAT_UNDEFINED)
       return D3DERR_NOTAVAILABLE;
 
     return D3D_OK;
@@ -388,7 +400,7 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
     if (unlikely(DeviceType == D3DDEVTYPE_SW)) {
-      if (m_parent->IsD3D8Compatible())
+      if (m_parent->IsD3DCompatibile(D3DCompatibility::D3D8))
         return D3DERR_INVALIDCALL;
       else
         return D3DERR_NOTAVAILABLE;
@@ -396,8 +408,9 @@ namespace dxvk {
 
     auto& options = m_parent->GetOptions();
 
-    const uint32_t maxShaderModel = m_parent->IsD3D8Compatible() ? std::min(1u, options.shaderModel) : options.shaderModel;
-    const auto& limits = m_adapter->deviceProperties().core.properties.limits;
+    const uint32_t maxShaderModel = m_parent->IsD3DCompatibile(D3DCompatibility::D3D8) ? std::min(1u, options.shaderModel)
+                                                                                       : options.shaderModel;
+    const auto& limits = m_caps.getProperties().core.properties.limits;
 
     // TODO: Actually care about what the adapter supports here.
     // ^ For Intel and older cards most likely here.
@@ -515,7 +528,7 @@ namespace dxvk {
                                     | D3DPBLENDCAPS_BLENDFACTOR;
 
     // Only 9Ex devices advertise D3DPBLENDCAPS_SRCCOLOR2 and D3DPBLENDCAPS_INVSRCCOLOR2
-    if (m_parent->IsExtended())
+    if (m_parent->IsD3DCompatibile(D3DCompatibility::D3D9Ex))
       pCaps->SrcBlendCaps          |= D3DPBLENDCAPS_SRCCOLOR2
                                     | D3DPBLENDCAPS_INVSRCCOLOR2;
 
@@ -854,7 +867,7 @@ namespace dxvk {
     if (pLUID == nullptr)
       return D3DERR_INVALIDCALL;
 
-    auto& vk11 = m_adapter->deviceProperties().vk11;
+    auto& vk11 = m_caps.getProperties().vk11;
 
     if (vk11.deviceLUIDValid)
       *pLUID = bit::cast<LUID>(vk11.deviceLUID);
@@ -870,13 +883,8 @@ namespace dxvk {
   }
 
 
-  bool D3D9Adapter::IsExtended() const {
-    return m_parent->IsExtended();
-  }
-
-
-  bool D3D9Adapter::IsD3D8Compatible() const {
-    return m_parent->IsD3D8Compatible();
+  bool D3D9Adapter::IsD3DCompatibile(D3DCompatibility d3dCompatibility) const {
+    return m_parent->IsD3DCompatibile(d3dCompatibility);
   }
 
 
@@ -1032,7 +1040,7 @@ namespace dxvk {
   void D3D9Adapter::CacheIdentifierInfo() {
     auto& options = m_parent->GetOptions();
 
-    const auto& props = m_adapter->deviceProperties();
+    const auto& props = m_caps.getProperties();
 
     m_deviceGuid   = bit::cast<GUID>(props.vk11.deviceUUID);
     m_vendorId     = props.core.properties.vendorID;

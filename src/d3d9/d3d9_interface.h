@@ -131,24 +131,34 @@ namespace dxvk {
     HRESULT ValidatePresentationParameters(
         const D3DPRESENT_PARAMETERS* pPresentationParameters);
 
-    const D3D9Options& GetOptions() { return m_d3d9Options; }
+    const D3D9Options& GetOptions() const { return m_d3d9Options; }
 
     D3D9Adapter* GetAdapter(UINT Ordinal) {
       return Ordinal < m_adapters.size()
-        ? &m_adapters[Ordinal]
+        ? m_adapters[Ordinal].ptr()
         : nullptr;
     }
 
-    bool IsExtended() { return m_extended; }
-
-    bool IsD3D8Compatible() const {
-      return m_isD3D8Compatible;
+    D3DCompatibilityFlags GetD3DCompatibilityFlags() const {
+      return m_d3dCompatibility;
     }
 
-    void EnableD3D8CompatibilityMode() {
-      m_isD3D8Compatible = true;
+    bool IsD3DCompatibile(D3DCompatibility d3dCompatibility) const {
+      return m_d3dCompatibility.test(d3dCompatibility);
+    }
+
+    void SetD3DCompatibility(D3DCompatibility d3dCompatibility) {
+      m_d3dCompatibility.set(d3dCompatibility);
+
+      switch (d3dCompatibility) {
+        case D3DCompatibility::D3D8:
+          Logger::info("The D3D9 interface is now operating in D3D8 compatibility mode.");
+          break;
+        default:
+          break;
+      }
+
       RefreshAdapterFormatTables();
-      Logger::info("The D3D9 interface is now operating in D3D8 compatibility mode.");
     }
 
     Rc<DxvkInstance> GetInstance() { return m_instance; }
@@ -163,26 +173,23 @@ namespace dxvk {
 
     inline void RefreshAdapterFormatTables() {
       for (auto& adapter : m_adapters)
-        adapter.RefreshFormatsTable();
+        adapter->RefreshFormatsTable();
     }
 
     Rc<DxvkInstance>              m_instance;
 
-    DxvkD3D8InterfaceBridge       m_d3d8Bridge;
-
-    bool                          m_extended;
-
-    bool                          m_isD3D8Compatible = false;
+    DxvkLegacyD3DInterfaceBridge  m_legacyD3DBridge;
+    D3DCompatibilityFlags         m_d3dCompatibility;
 
     D3D9Options                   m_d3d9Options;
 
-    std::vector<D3D9Adapter>      m_adapters;
+    std::vector<Rc<D3D9Adapter>>  m_adapters;
 
     D3D9VkInteropInterface        m_d3d9Interop;
 
     bool m_unlockAdditionalFormats = false;
 
-    D3D9VkExtInterface            m_d3d9ExtInterface;
+    D3D9VkExtInterface            m_d3d9VkExtInterface;
 
     static const D3D9ON12_ARGS* Find9On12Args(
       const Rc<DxvkAdapter>& Adapter,

@@ -50,11 +50,22 @@ namespace dxvk {
     m_allocationCache = m_device->createAllocationCache(bufferUsage, memoryFlags);
 
     // Determine maximum tess factor based on device options
-    int32_t tessFactorOption = m_parent->GetOptions()->maxTessFactor;
-    m_maxTessFactor = std::min(m_device->properties().core.properties.limits.maxTessellationGenerationLevel, 64u);
+    if (!IsDeferred) {
+      int32_t maxTessFactor = int32_t(std::min(m_device->properties().core.properties.limits.maxTessellationGenerationLevel, 64u));
 
-    if (tessFactorOption > 0 && tessFactorOption < int32_t(m_maxTessFactor))
-      m_maxTessFactor = tessFactorOption;
+      if (m_parent->GetOptions()->maxTessFactor > 0)
+        maxTessFactor = std::min(maxTessFactor, m_parent->GetOptions()->maxTessFactor);
+
+      EmitCs([
+        cMaxTessFactor = maxTessFactor
+      ] (DxvkContext* ctx) {
+        D3D11HsPushData pushData = {};
+        pushData.maxTessFactor = float(cMaxTessFactor);
+
+        ctx->pushData(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+          0, sizeof(pushData), &pushData);
+      });
+    }
   }
 
 
@@ -903,6 +914,9 @@ namespace dxvk {
       });
     }
 
+    if constexpr (!IsDeferred)
+      GetTypedContext()->NotifyResolve();
+
     if (dstTextureInfo->HasSequenceNumber())
       GetTypedContext()->TrackTextureSequenceNumber(dstTextureInfo, DstSubresource);
   }
@@ -1092,9 +1106,6 @@ namespace dxvk {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
 
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndexedIndirectCommand)))
-      return;
-
     if (unlikely(HasDirtyGraphicsBindings()))
       ApplyDirtyGraphicsBindings();
 
@@ -1129,9 +1140,6 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndirectCommand)))
-      return;
 
     if (unlikely(HasDirtyGraphicsBindings()))
       ApplyDirtyGraphicsBindings();
@@ -1191,9 +1199,6 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDispatchIndirectCommand)))
-      return;
 
     AddCost(GpuCostEstimate::DispatchIndirect);
 
@@ -3432,22 +3437,23 @@ namespace dxvk {
 
   template<typename ContextType>
   void D3D11CommonContext<ContextType>::ApplyRasterizerSampleCount() {
-    uint32_t sampleCount = m_state.om.sampleCount;
+    D3D11SpecData specData = {};
+    specData.sampleCount = m_state.om.sampleCount;
 
-    if (unlikely(!sampleCount)) {
-      sampleCount = m_state.rs.state
+    if (unlikely(!specData.sampleCount)) {
+      specData.sampleCount = m_state.rs.state
         ? m_state.rs.state->Desc().ForcedSampleCount
         : 0u;
 
-      if (!sampleCount)
-        sampleCount = 1u;
+      if (!specData.sampleCount)
+        specData.sampleCount = 1u;
     }
 
     EmitCs([
-      cPushConstants = DxvkBuiltInPushData(sampleCount, m_maxTessFactor)
+      cSpecData = specData
     ] (DxvkContext* ctx) {
-      ctx->pushData(VK_SHADER_STAGE_ALL_GRAPHICS,
-        0u, sizeof(cPushConstants), &cPushConstants);
+      ctx->setSpecConstants(VK_PIPELINE_BIND_POINT_GRAPHICS,
+        0u, sizeof(cSpecData), &cSpecData);
     });
   }
 
@@ -4819,8 +4825,7 @@ namespace dxvk {
   template<typename ContextType>
   void D3D11CommonContext<ContextType>::ResetCommandListState() {
     EmitCs([
-      cUsedBindings  = GetMaxUsedBindings(),
-      cMaxTessFactor = m_maxTessFactor
+      cUsedBindings  = GetMaxUsedBindings()
     ] (DxvkContext* ctx) {
       // Reset render targets
       ctx->bindRenderTargets(DxvkRenderTargets(), 0u);
@@ -4911,10 +4916,6 @@ namespace dxvk {
           }
         }
       }
-
-      // Initialize push constants
-      DxvkBuiltInPushData pc(1u, cMaxTessFactor);
-      ctx->pushData(VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(pc), &pc);
     });
   }
 
@@ -5337,6 +5338,7 @@ namespace dxvk {
       return;
 
     bool needsUpdate = false;
+    bool isMultisampled = false;
 
     if (likely(NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)) {
       // Native D3D11 does not change the render targets if
@@ -5357,6 +5359,8 @@ namespace dxvk {
           if (NumUAVs == D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
             ResolveOmUavHazards(rtv);
         }
+
+        isMultisampled = isMultisampled || (rtv && rtv->GetSampleCount() > 1u);
       }
 
       auto dsv = static_cast<D3D11DepthStencilView*>(pDepthStencilView);
@@ -5411,7 +5415,7 @@ namespace dxvk {
       BindFramebuffer();
 
       if constexpr (!IsDeferred)
-        GetTypedContext()->NotifyRenderPassBoundary();
+        GetTypedContext()->NotifyRenderPassBoundary(isMultisampled);
     }
   }
 

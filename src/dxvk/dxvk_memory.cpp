@@ -202,7 +202,7 @@ namespace dxvk {
       std::tuple(key), std::tuple()).first->second;
 
     VkImageUsageFlags renderTargetUsage = key.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
-    VkImageUsageFlags shaderResourceUsage = key.usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+    VkImageUsageFlags shaderResourceUsage = key.usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
 
     VkImageViewUsageCreateInfo usage = { VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO };
     usage.usage = key.usage;
@@ -236,10 +236,14 @@ namespace dxvk {
       imageInfo.layout = key.layout;
 
       VkResourceDescriptorInfoEXT info = { VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT };
-      info.type = (key.usage == VK_IMAGE_USAGE_STORAGE_BIT)
-        ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
-        : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
       info.data.pImage = &imageInfo;
+
+      if (key.usage & VK_IMAGE_USAGE_STORAGE_BIT)
+        info.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      else if (key.usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)
+        info.type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+      else
+        info.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 
       VkResult vr = vk->vkWriteResourceDescriptorsEXT(vk->device(), 1u, &info, &hostAddress);
 
@@ -248,9 +252,12 @@ namespace dxvk {
     } else if (m_device->canUseDescriptorBuffer() && shaderResourceUsage) {
       VkDescriptorGetInfoEXT info = { VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT };
 
-      if (shaderResourceUsage == VK_IMAGE_USAGE_STORAGE_BIT) {
+      if (shaderResourceUsage & VK_IMAGE_USAGE_STORAGE_BIT) {
         info.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         info.data.pStorageImage = &descriptor.legacy.image;
+      } else if (shaderResourceUsage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) {
+        info.type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        info.data.pInputAttachmentImage = &descriptor.legacy.image;
       } else {
         info.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         info.data.pSampledImage = &descriptor.legacy.image;
@@ -1297,7 +1304,7 @@ namespace dxvk {
     const DxvkBufferImportInfo&       importInfo) {
     Rc<DxvkResourceAllocation> allocation = m_allocationPool.create(this, nullptr);
     allocation->m_flags.set(DxvkAllocationFlag::Imported);
-    allocation->m_resourceCookie = allocation->m_resourceCookie;
+    allocation->m_resourceCookie = allocationInfo.resourceCookie;
     allocation->m_size = createInfo.size;
     allocation->m_mapPtr = importInfo.mapPtr;
     allocation->m_buffer = importInfo.buffer;
@@ -1316,7 +1323,7 @@ namespace dxvk {
           VkImage                     imageHandle) {
     Rc<DxvkResourceAllocation> allocation = m_allocationPool.create(this, nullptr);
     allocation->m_flags.set(DxvkAllocationFlag::Imported);
-    allocation->m_resourceCookie = allocation->m_resourceCookie;
+    allocation->m_resourceCookie = allocationInfo.resourceCookie;
     allocation->m_image = imageHandle;
 
     return allocation;
@@ -2178,8 +2185,27 @@ namespace dxvk {
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+    uint32_t hostVisibleVramIndex = uint32_t(
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    // Handle obscure setups where cached memory is unavailable.
     if (!m_memTypesByPropertyFlags[hostCachedIndex])
       m_memTypesByPropertyFlags[hostCachedIndex] = m_memTypesByPropertyFlags[hostCoherentIndex];
+
+    // If we zero mapped memory, we need good CPU memory bandwidth.
+    // Prefer uncached system memory over HVV in that case.
+    if (m_device->config().zeroMappedMemory)
+      m_memTypesByPropertyFlags[hostVisibleVramIndex] = m_memTypesByPropertyFlags[hostCoherentIndex];
+
+    // On tilers, we are likely running on an ARM system where uncached
+    // stores are expected to be very slow. Always use cached memory
+    // for mapped allocations.
+    if (m_device->perfHints().preferCachedMemory) {
+      m_memTypesByPropertyFlags[hostCoherentIndex] = m_memTypesByPropertyFlags[hostCachedIndex];
+      m_memTypesByPropertyFlags[hostVisibleVramIndex] = m_memTypesByPropertyFlags[hostCachedIndex];
+    }
   }
 
 
@@ -2362,7 +2388,25 @@ namespace dxvk {
 
   uint32_t DxvkMemoryAllocator::getMemoryTypeMask(
           VkMemoryPropertyFlags properties) const {
-    return m_memTypesByPropertyFlags[uint32_t(properties) % uint32_t(m_memTypesByPropertyFlags.size())];
+    uint32_t index = uint32_t(properties);
+    uint32_t count = uint32_t(m_memTypesByPropertyFlags.size());
+
+    if (likely(index < count))
+      return m_memTypesByPropertyFlags[index];
+
+    // If we get asked for uncommon memory properties, scan
+    // memory types for the requested flags
+    uint32_t mask = 0u;
+
+    for (uint32_t i = 0u; i < m_memTypes.size(); i++) {
+      if ((m_memTypes[i].properties.propertyFlags & properties) == properties)
+        mask |= 1u << i;
+    }
+
+    if (!mask)
+      mask = m_memTypesByPropertyFlags[index % count];
+
+    return mask;
   }
 
 

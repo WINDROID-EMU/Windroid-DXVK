@@ -473,9 +473,7 @@ namespace dxvk {
       const Rc<DxvkImage>&            Image,
             VkImageUsageFlags         Usage);
 
-    static D3D_FEATURE_LEVEL GetMaxFeatureLevel(
-      const Rc<DxvkInstance>& Instance,
-      const Rc<DxvkAdapter>&  Adapter);
+    static D3D_FEATURE_LEVEL GetMaxFeatureLevel(const DxvkDevice& Device);
     
     DxvkBarrierControlFlags GetOptionsBarrierControlFlags() {
       DxvkBarrierControlFlags barrierControl = 0u;
@@ -1014,8 +1012,16 @@ namespace dxvk {
     DXGIVkSwapChainFactory   m_dxvkFactory;
 
     D3DDestructionNotifier   m_destructionNotifier;
-    
+
+    struct {
+      HMODULE igd10iumd64 = nullptr;
+    } m_vendorHacks;
+
     uint32_t m_frameLatency = DefaultFrameLatency;
+
+    HMODULE initVendorHacks();
+
+    void cleanupVendorHacks();
 
   };
   

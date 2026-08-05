@@ -1,8 +1,16 @@
+#include <algorithm>
 
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 
 namespace dxvk {
+
+  DxvkDeviceQueue getQueueForCommandBuffer(DxvkDevice* device, DxvkCmdBuffer cmdBuffer) {
+    return cmdBuffer < DxvkCmdBuffer::SdmaBuffer
+      ? device->queues().graphics
+      : device->queues().transfer;
+  }
+
 
   DxvkCommandSubmission::DxvkCommandSubmission() {
 
@@ -223,7 +231,8 @@ namespace dxvk {
   DxvkCommandList::DxvkCommandList(DxvkDevice* device)
   : m_device        (device),
     m_vkd           (device->vkd()),
-    m_vki           (device->vki()) {
+    m_vki           (device->vki()),
+    m_checkpoints   (device->getCheckpointBuffer()) {
     const auto& graphicsQueue = m_device->queues().graphics;
     const auto& transferQueue = m_device->queues().transfer;
 
@@ -233,6 +242,8 @@ namespace dxvk {
       m_transferPool = new DxvkCommandPool(device, transferQueue.queueFamily);
     else
       m_transferPool = m_graphicsPool;
+
+    resetCheckpoints();
   }
   
   
@@ -405,8 +416,15 @@ namespace dxvk {
     // For consistency, end all command buffers here,
     // regardless of whether they have been used.
     for (uint32_t i = 0; i < m_cmd.cmdBuffers.size(); i++) {
-      if (m_cmd.cmdBuffers[i])
+      if (m_cmd.cmdBuffers[i]) {
+        if (m_checkpoints) {
+          m_checkpoints->endCommandBuffer(
+            getQueueForCommandBuffer(m_device, DxvkCmdBuffer(i)),
+            m_cmd.cmdBuffers[i], m_checkpointIds[i]);
+        }
+
         endCommandBuffer(m_cmd.cmdBuffers[i]);
+      }
     }
 
     // Reset all command buffer handles
@@ -450,6 +468,8 @@ namespace dxvk {
 
   
   void DxvkCommandList::reset() {
+    resetCheckpoints();
+
     // We will re-apply heap bindings first thing in a
     // new command list, so reset this flag here
     m_descriptorHeapInvalidated = false;
@@ -549,7 +569,8 @@ namespace dxvk {
           } break;
 
           case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
             if (info.descriptor)
               descriptor.image = info.descriptor->legacy.image;
           } break;
@@ -571,10 +592,14 @@ namespace dxvk {
 
       sets.push_back(set);
 
-      this->cmdBindDescriptorSets(cmdBuffer,
-        layout->getBindPoint(),
-        layout->getPipelineLayout(),
-        0u, sets.size(), sets.data());
+      VkBindDescriptorSetsInfo bindInfo = { VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO };
+      bindInfo.stageFlags = layout->getShaderStageMask();
+      bindInfo.layout = layout->getPipelineLayout();
+      bindInfo.firstSet = 0u;
+      bindInfo.descriptorSetCount = sets.size();
+      bindInfo.pDescriptorSets = sets.data();
+
+      this->cmdBindDescriptorSets(cmdBuffer, &bindInfo);
     }
 
     // Update push constants
@@ -585,12 +610,14 @@ namespace dxvk {
       std::memcpy(dataCopy.data(), pushData,
         std::min(dataCopy.size(), pushDataSize));
 
-      this->cmdPushConstants(cmdBuffer,
-        layout->getPipelineLayout(),
-        pushDataBlock.getStageMask(),
-        pushDataBlock.getOffset(),
-        pushDataBlock.getSize(),
-        dataCopy.data());
+      VkPushConstantsInfo pushInfo = { VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO };
+      pushInfo.layout = layout->getPipelineLayout();
+      pushInfo.stageFlags = pushDataBlock.getStageMask();
+      pushInfo.offset = pushDataBlock.getOffset();
+      pushInfo.size = pushDataBlock.getSize();
+      pushInfo.pValues = dataCopy.data();
+
+      this->cmdPushConstants(cmdBuffer, &pushInfo);
     }
   }
 
@@ -669,7 +696,8 @@ namespace dxvk {
           case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
           case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
           case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
             auto descriptor = info.descriptor;
 
             if (!descriptor)
@@ -764,7 +792,8 @@ namespace dxvk {
           case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
           case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
           case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
             auto descriptor = info.descriptor;
 
             if (!descriptor)
@@ -800,12 +829,15 @@ namespace dxvk {
       bufferOffsets[setCount] = storage.offset;
       setCount++;
 
-      cmdSetDescriptorBufferOffsetsEXT(cmdBuffer,
-        layout->getBindPoint(),
-        layout->getPipelineLayout(),
-        0u, setCount,
-        bufferIndices.data(),
-        bufferOffsets.data());
+      VkSetDescriptorBufferOffsetsInfoEXT bindInfo = { VK_STRUCTURE_TYPE_SET_DESCRIPTOR_BUFFER_OFFSETS_INFO_EXT };
+      bindInfo.stageFlags = layout->getShaderStageMask();
+      bindInfo.layout = layout->getPipelineLayout();
+      bindInfo.firstSet = 0u;
+      bindInfo.setCount = setCount;
+      bindInfo.pBufferIndices = bufferIndices.data();
+      bindInfo.pOffsets = bufferOffsets.data();
+
+      cmdSetDescriptorBufferOffsetsEXT(cmdBuffer, &bindInfo);
     }
 
     // Update push constants
@@ -816,12 +848,14 @@ namespace dxvk {
       std::memcpy(dataCopy.data(), pushData,
         std::min(dataCopy.size(), pushDataSize));
 
-      this->cmdPushConstants(cmdBuffer,
-        layout->getPipelineLayout(),
-        pushDataBlock.getStageMask(),
-        pushDataBlock.getOffset(),
-        pushDataBlock.getSize(),
-        dataCopy.data());
+      VkPushConstantsInfo pushInfo = { VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO };
+      pushInfo.layout = layout->getPipelineLayout();
+      pushInfo.stageFlags = pushDataBlock.getStageMask();
+      pushInfo.offset = pushDataBlock.getOffset();
+      pushInfo.size = pushDataBlock.getSize();
+      pushInfo.pValues = dataCopy.data();
+
+      this->cmdPushConstants(cmdBuffer, &pushInfo);
     }
   }
 
@@ -836,8 +870,9 @@ namespace dxvk {
     m_descriptorRange = m_descriptorHeap->allocRange();
     auto newBaseAddress = m_descriptorRange->getHeapInfo().gpuAddress;
 
-    if (newBaseAddress != oldBaseAddress) {
+    if (unlikely(newBaseAddress != oldBaseAddress)) {
       if (m_execBuffer) {
+        // Can't rebind heap on secondary
         m_descriptorRange = nullptr;
         return false;
       }
@@ -1028,6 +1063,85 @@ namespace dxvk {
       VkDeviceSize dataSize = range->getAllocationOffset() - baseOffset;
       addStatCtr(DxvkStatCounter::DescriptorHeapUsed, dataSize);
     }
+  }
+
+
+  void DxvkCommandList::resetCheckpoints() {
+    std::fill(m_checkpointIds.begin(), m_checkpointIds.end(), -1);
+  }
+
+
+  void DxvkCommandList::debugMarker(
+          DxvkCmdBuffer                 cmdBuffer,
+    const char*                         text) {
+    if (m_checkpoints) {
+      auto cmdIndex = uint32_t(cmdBuffer);
+
+      m_checkpointIds.at(cmdIndex) = m_checkpoints->addCheckpoint(
+        getQueueForCommandBuffer(m_device, cmdBuffer), getCmdBuffer(cmdBuffer),
+        m_checkpointIds.at(cmdIndex), text);
+    }
+  }
+
+
+  void DxvkCommandList::debugDispatch(
+          DxvkCmdBuffer                 cmdBuffer,
+    const char*                         text,
+          uint32_t                      x,
+          uint32_t                      y,
+          uint32_t                      z) {
+    debugMarker(cmdBuffer, str::format(text, " (", x, ", ", y, ", ", z, ")").c_str());
+  }
+
+
+  void DxvkCommandList::debugDraw(
+          DxvkCmdBuffer                 cmdBuffer,
+    const char*                         text,
+          uint32_t                      count,
+          uint32_t                      instances) {
+    debugMarker(cmdBuffer, str::format(text, " (", count, ", ", instances, ")").c_str());
+  }
+
+
+  void DxvkCommandList::debugDrawMulti(
+          DxvkCmdBuffer                 cmdBuffer,
+    const char*                         text,
+          uint32_t                      count) {
+    debugMarker(cmdBuffer, str::format(text, " (", count, ")").c_str());
+  }
+
+
+  void DxvkCommandList::debugDrawIndirect(
+          DxvkCmdBuffer                 cmdBuffer,
+    const char*                         text,
+          uint32_t                      count,
+          uint32_t                      stride) {
+    debugMarker(cmdBuffer, str::format(text, " (", count, ", ", stride, ")").c_str());
+  }
+
+
+  void DxvkCommandList::debugBarrier(
+          DxvkCmdBuffer                 cmdBuffer,
+    const VkDependencyInfo*             depInfo) {
+    VkMemoryBarrier2 barrier = {};
+
+    for (uint32_t i = 0u; i < depInfo->memoryBarrierCount; i++) {
+      barrier.srcStageMask |= depInfo->pMemoryBarriers[i].srcStageMask;
+      barrier.srcAccessMask |= depInfo->pMemoryBarriers[i].srcAccessMask;
+      barrier.dstStageMask |= depInfo->pMemoryBarriers[i].dstStageMask;
+      barrier.dstAccessMask |= depInfo->pMemoryBarriers[i].dstAccessMask;
+    }
+
+    for (uint32_t i = 0u; i < depInfo->imageMemoryBarrierCount; i++) {
+      barrier.srcStageMask |= depInfo->pImageMemoryBarriers[i].srcStageMask;
+      barrier.srcAccessMask |= depInfo->pImageMemoryBarriers[i].srcAccessMask;
+      barrier.dstStageMask |= depInfo->pImageMemoryBarriers[i].dstStageMask;
+      barrier.dstAccessMask |= depInfo->pImageMemoryBarriers[i].dstAccessMask;
+    }
+
+    debugMarker(cmdBuffer, str::format("Barrier (", depInfo->memoryBarrierCount, ", ", depInfo->imageMemoryBarrierCount, "): ",
+      "0x", std::hex, barrier.srcStageMask, ":0x", std::hex, barrier.srcAccessMask, " -> ",
+      "0x", std::hex, barrier.dstStageMask, ":0x", std::hex, barrier.dstAccessMask).c_str());
   }
 
 }

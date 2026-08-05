@@ -62,7 +62,7 @@ namespace dxvk {
       if (!openWriteOnlyLocked())
         Logger::warn(str::format("Failed to re-initialize shader cache ", name));
 
-      m_status.store(Status::OpenWriteOnly, std::memory_order_release);
+      m_status.store(Status::OpenWriteOnly);
     }
 
     return shader;
@@ -70,7 +70,7 @@ namespace dxvk {
 
 
   void DxvkShaderCache::addShader(Rc<DxvkIrShader> shader) {
-    if (!ensureStatus(Status::OpenReadWrite))
+    if (!ensureStatus(Status::OpenWriteOnly))
       return;
 
     LutKey k = { };
@@ -89,7 +89,7 @@ namespace dxvk {
 
 
   bool DxvkShaderCache::ensureStatus(Status status) {
-    auto currentStatus = m_status.load(std::memory_order_acquire);
+    auto currentStatus = m_status.load();
 
     if (currentStatus == Status::Uninitialized)
       currentStatus = initialize();
@@ -100,14 +100,14 @@ namespace dxvk {
 
   DxvkShaderCache::Status DxvkShaderCache::initialize() {
     std::unique_lock lock(m_fileMutex);
-    auto status = m_status.load(std::memory_order_relaxed);
+    auto status = m_status.load();
 
     if (status != Status::Uninitialized)
       return status;
 
     status = tryInitializeLocked();
 
-    m_status.store(status, std::memory_order_release);
+    m_status.store(status);
     return status;
   }
 
@@ -124,7 +124,7 @@ namespace dxvk {
     }
 
     if (openWriteOnlyLocked())
-      return Status::OpenReadWrite;
+      return Status::OpenWriteOnly;
 
     return Status::CacheDisabled;
   }
@@ -227,6 +227,21 @@ namespace dxvk {
       m_lut.insert_or_assign(k, e);
     }
 
+    auto cacheSize = m_binFile.size();;
+
+    std::stringstream message;
+    message << "Cache: " << m_lut.size() << " shaders (";
+
+    if (cacheSize >= (1ull << 20)) {
+      auto mib = (10ull * cacheSize) >> 20;
+      message << (mib / 10ull) << "." << (mib % 10ull) << " MB";
+    } else {
+      message << (cacheSize >> 10u) << " kB";
+    }
+
+    message << ")";
+
+    Logger::info(message.str());
     return true;
   }
 
@@ -403,6 +418,21 @@ namespace dxvk {
       layout.addSamplerHeap(binding);
     }
 
+    // Read spec data mappings
+    uint32_t specDataCount = 0u;
+
+    if (!read(stream, offset, specDataCount))
+      return false;
+
+    for (uint32_t i = 0u; i < specDataCount; i++) {
+      DxvkShaderBinding binding = { };
+
+      if (!read(stream, offset, binding))
+        return false;
+
+      layout.addSpecDataBuffer(binding);
+    }
+
     return true;
   }
 
@@ -442,7 +472,7 @@ namespace dxvk {
 
 
   void DxvkShaderCache::runWriter() {
-    small_vector<Rc<DxvkIrShader>, 128u> localQueue;
+    small_vector<Rc<DxvkIrShader>, 32u> localQueue;
 
     env::setThreadName("dxvk-cache");
 
@@ -505,6 +535,11 @@ namespace dxvk {
 
     for (size_t i = 0u; i < layout.getSamplerHeapBindingCount(); i++)
       status = status && write(stream, layout.getSamplerHeapBinding(i));
+
+    status = status && write(stream, uint32_t(layout.getSpecDataBindingCount()));
+
+    for (size_t i = 0u; i < layout.getSpecDataBindingCount(); i++)
+      status = status && write(stream, layout.getSpecDataBinding(i));
 
     return status;
   }
@@ -648,7 +683,7 @@ namespace dxvk {
     // The ref count can only be incremented from 0 to 1 inside a locked
     // context, so this check is safe. Don't destroy the object if another
     // thread has essentially revived it.
-    if (m_useCount.load(std::memory_order_relaxed) || s_instance.instance != this) {
+    if (m_useCount.load() || s_instance.instance != this) {
       if (s_instance.instance == this)
         s_instance.instance = nullptr;
 

@@ -49,11 +49,11 @@ namespace dxvk {
   public:
 
     void incRef() {
-      m_useCount.fetch_add(1u, std::memory_order_acquire);
+      m_useCount.fetch_add(1u);
     }
 
     void decRef() {
-      if (m_useCount.fetch_sub(1u, std::memory_order_release) == 1u)
+      if (m_useCount.fetch_sub(1u) == 1u)
         delete this;
     }
 
@@ -105,6 +105,9 @@ namespace dxvk {
   class DxvkIrShader : public DxvkShader {
 
   public:
+
+    // Arbitrarily chosen number that we know we won't use anywhere else
+    static constexpr uint32_t SpecDataSet = 7u;
 
     DxvkIrShader(
       const DxvkIrShaderCreateInfo&   info,

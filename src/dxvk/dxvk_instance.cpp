@@ -78,9 +78,9 @@ namespace dxvk {
 
   Rc<DxvkAdapter> DxvkInstance::findAdapterByLuid(const void* luid) const {
     for (const auto& adapter : m_adapters) {
-      const auto& vk11 = adapter->deviceProperties().vk11;
+      auto adapterInfo = adapter->info();
 
-      if (vk11.deviceLUIDValid && !std::memcmp(luid, vk11.deviceLUID, VK_LUID_SIZE))
+      if (adapterInfo.luidIsValid && !std::memcmp(luid, adapterInfo.deviceLuid, VK_LUID_SIZE))
         return adapter;
     }
 
@@ -90,10 +90,10 @@ namespace dxvk {
   
   Rc<DxvkAdapter> DxvkInstance::findAdapterByDeviceId(uint16_t vendorId, uint16_t deviceId) const {
     for (const auto& adapter : m_adapters) {
-      const auto& props = adapter->deviceProperties();
+      auto adapterInfo = adapter->info();
 
-      if (props.core.properties.vendorID == vendorId
-       && props.core.properties.deviceID == deviceId)
+      if (adapterInfo.vendorId == vendorId
+       && adapterInfo.deviceId == deviceId)
         return adapter;
     }
 
@@ -177,6 +177,8 @@ namespace dxvk {
       m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Markers);
     else if (debugEnv == "capture" || m_options.enableDebugUtils || capture)
       m_debugFlags.set(DxvkDebugFlag::Capture);
+    else if (debugEnv == "hang")
+      m_debugFlags.set(DxvkDebugFlag::Capture, DxvkDebugFlag::Hang);
 
     if (m_debugFlags.isClear()) {
       // Disable any usage of the extension altogether
@@ -243,7 +245,7 @@ namespace dxvk {
       appInfo.pApplicationName      = appName.c_str();
       appInfo.applicationVersion    = flags.raw();
       appInfo.pEngineName           = "DXVK";
-      appInfo.engineVersion         = VK_MAKE_API_VERSION(0, 3, 0, 0);
+      appInfo.engineVersion         = VK_MAKE_API_VERSION(0, 3, 0, 2);
       appInfo.apiVersion            = DxvkVulkanApiVersion;
 
       VkInstanceCreateInfo info = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
@@ -331,8 +333,8 @@ namespace dxvk {
         uint32_t bRank = deviceTypes.size();
 
         for (uint32_t i = 0; i < std::min(aRank, bRank); i++) {
-          if (a->deviceProperties().core.properties.deviceType == deviceTypes[i]) aRank = i;
-          if (b->deviceProperties().core.properties.deviceType == deviceTypes[i]) bRank = i;
+          if (a->info().deviceType == deviceTypes[i]) aRank = i;
+          if (b->info().deviceType == deviceTypes[i]) bRank = i;
         }
 
         return aRank < bRank;

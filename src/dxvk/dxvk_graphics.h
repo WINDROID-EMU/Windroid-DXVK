@@ -378,14 +378,14 @@ namespace dxvk {
       // Find a pipeline handle to use. If no optimized pipeline has
       // been compiled yet, use the slower base pipeline instead.
       DxvkGraphicsPipelineHandle result;
-      result.handle = fastHandle.load(std::memory_order_acquire);
+      result.handle = fastHandle.load();
       result.type = DxvkGraphicsPipelineType::FastPipeline;
       result.attachments = attachments;
 
       if (likely(fastHandle))
         return result;
 
-      result.handle = baseHandle.load(std::memory_order_acquire);
+      result.handle = baseHandle.load();
       result.type = DxvkGraphicsPipelineType::BasePipeline;
       return result;
     }
@@ -468,6 +468,24 @@ namespace dxvk {
       hash.add(scState.hash());
       return hash;
     }
+  };
+
+
+  /**
+   * \brief Fast instance object
+   *
+   * Stores the pipeline handle, as well as the compile status. Can
+   * be accessed from multiple threads concurrently. A status of
+   * VK_NOT_READY indicates that pipeline compilation is still in
+   * progress on another thread.
+   */
+  struct DxvkGraphicsPipelineFastInstanceObject {
+    DxvkGraphicsPipelineFastInstanceObject() = default;
+    DxvkGraphicsPipelineFastInstanceObject(VkResult s, VkPipeline p)
+    : pipeline(p), status(s) { }
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::atomic<VkResult> status = { VK_NOT_READY };
   };
 
 
@@ -625,7 +643,8 @@ namespace dxvk {
     dxvk::mutex                                   m_fastMutex;
     std::unordered_map<
       DxvkGraphicsPipelineFastInstanceKey,
-      VkPipeline, DxvkHash, DxvkEq>               m_fastPipelines;
+      DxvkGraphicsPipelineFastInstanceObject,
+      DxvkHash, DxvkEq> m_fastPipelines;
 
     DxvkGraphicsPipelineInstance* createInstance(
       const DxvkGraphicsPipelineStateInfo& state,
@@ -646,7 +665,7 @@ namespace dxvk {
     VkPipeline getOptimizedPipeline(
       const DxvkGraphicsPipelineStateInfo& state);
 
-    VkPipeline createOptimizedPipeline(
+    std::pair<VkResult, VkPipeline> createOptimizedPipeline(
       const DxvkGraphicsPipelineFastInstanceKey& key) const;
 
     void destroyBasePipelines();
