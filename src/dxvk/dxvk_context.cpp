@@ -77,6 +77,10 @@ namespace dxvk {
 
     // Create timeline semaphore for resource tracking IDs
     m_trackingFence = m_device->createFence(DxvkFenceCreateInfo());
+
+    // Set up renderdoc capture helper
+    if (m_device->debugFlags().test(DxvkDebugFlag::Capture))
+      m_framesToCapture = parseFrameCaptureEnv();
   }
   
   
@@ -88,6 +92,13 @@ namespace dxvk {
   void DxvkContext::beginRecording(const Rc<DxvkCommandList>& cmdList) {
     m_cmd = cmdList;
     m_cmd->init();
+
+    if (unlikely(!m_trackingId)) {
+      // If this is the first command list ever, check if
+      // we want to capture the first frame
+      if (!m_framesToCapture.first && m_framesToCapture.second)
+        beginFrameCapture();
+    }
 
     m_trackingId += 1u;
 
@@ -115,6 +126,14 @@ namespace dxvk {
 
   void DxvkContext::endFrame() {
     m_renderPassIndex = 0u;
+
+    if (m_frameCount >= m_framesToCapture.first && m_frameCount < m_framesToCapture.second)
+      endFrameCapture();
+
+    m_frameCount += 1u;
+
+    if (m_frameCount >= m_framesToCapture.first && m_frameCount < m_framesToCapture.second)
+      beginFrameCapture();
   }
 
 
@@ -1497,12 +1516,8 @@ namespace dxvk {
     }
 
     // Some images have to stay in their place, we can't do much in that case.
-    if (!image->canRelocate()) {
-      Logger::err(str::format("DxvkContext: Cannot relocate image:",
-        "\n  Current usage:   0x", std::hex, image->info().usage, ", flags: 0x", image->info().flags, ", ", std::dec, image->info().viewFormatCount, " view formats"
-        "\n  Requested usage: 0x", std::hex, usageInfo.usage, ", flags: 0x", usageInfo.flags, ", ", std::dec, usageInfo.viewFormatCount, " view formats"));
+    if (!image->canRelocate())
       return false;
-    }
 
     // Enable mutable format bit as necessary. We do not require
     // setting this explicitly so that the caller does not have
@@ -2269,18 +2284,16 @@ namespace dxvk {
     }
 
     if (!attachments.empty()) {
+      DxvkFramebufferSize fbSize = m_state.om.framebufferInfo.size();
+
       VkClearRect clearRect = { };
-      clearRect.rect = m_state.om.renderingInfo.rendering.renderArea;
-      clearRect.layerCount = m_state.om.renderingInfo.rendering.layerCount;
+      clearRect.rect.extent = VkExtent2D { fbSize.width, fbSize.height };
+      clearRect.layerCount = fbSize.layers;
 
       m_cmd->cmdClearAttachments(DxvkCmdBuffer::ExecBuffer,
         attachments.size(), attachments.data(), 1u, &clearRect);
 
-      // Full clears require the render area to cover everything
-      m_state.om.renderAreaLo = VkOffset2D { 0, 0 };
-      m_state.om.renderAreaHi = VkOffset2D {
-        int32_t(clearRect.rect.extent.width),
-        int32_t(clearRect.rect.extent.height) };
+      adjustRenderArea(clearRect.rect, true);
     }
 
     m_deferredClears.clear();
@@ -2606,6 +2619,11 @@ namespace dxvk {
       renderingInfo.rendering.renderArea.extent = VkExtent2D {
         uint32_t(m_state.om.renderAreaHi.x - m_state.om.renderAreaLo.x),
         uint32_t(m_state.om.renderAreaHi.y - m_state.om.renderAreaLo.y) };
+
+      // If there are no layered clears or draws, set layer count to 1.
+      // May help reduce render pass memory usage on some GPUs.
+      if (!m_state.om.renderLayered)
+        renderingInfo.rendering.layerCount = 1u;
     }
   }
 
@@ -2630,13 +2648,14 @@ namespace dxvk {
   }
 
 
-  void DxvkContext::adjustRenderArea(const VkRect2D& rect) {
+  void DxvkContext::adjustRenderArea(const VkRect2D& rect, bool layered) {
     m_state.om.renderAreaLo = VkOffset2D {
       std::min(m_state.om.renderAreaLo.x, rect.offset.x),
       std::min(m_state.om.renderAreaLo.y, rect.offset.y) };
     m_state.om.renderAreaHi = VkOffset2D {
       std::max(m_state.om.renderAreaHi.x, int32_t(rect.offset.x + rect.extent.width)),
       std::max(m_state.om.renderAreaHi.y, int32_t(rect.offset.y + rect.extent.height)) };
+    m_state.om.renderLayered |= layered;
   }
 
 
@@ -3934,7 +3953,10 @@ namespace dxvk {
     DxvkImageUsageInfo imageUsage = { };
     imageUsage.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
 
-    ensureImageCompatibility(image, imageUsage);
+    if (!ensureImageCompatibility(image, imageUsage)) {
+      Logger::err("DxvkContext: copyImageToBufferCs: Failed to make image shader-readable.");
+      return;
+    }
 
     if (unlikely(m_features.test(DxvkContextFeature::DebugUtils))) {
       const char* dstName = buffer->info().debugName;
@@ -4196,7 +4218,7 @@ namespace dxvk {
       clearRect.rect.extent.height = extent.height;
       clearRect.layerCount = imageView->info().layerCount;
 
-      adjustRenderArea(clearRect.rect);
+      adjustRenderArea(clearRect.rect, true);
 
       // Check whether we can fold the clear into the curret render pass. This is the
       // case when the framebuffer size matches the clear size, even if the clear itself
@@ -4918,7 +4940,7 @@ namespace dxvk {
     m_cmd->cmdSetViewport(1, &viewport);
     m_cmd->cmdSetScissor(1, &scissor);
 
-    adjustRenderArea(scissor);
+    adjustRenderArea(scissor, true);
 
     std::array<DxvkDescriptorWrite, 2u> descriptors = { };
     descriptors[0].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
@@ -6458,20 +6480,14 @@ namespace dxvk {
     // Reset render area tracking, will be adjusted when drawing with viewports.
     m_state.om.renderAreaLo = VkOffset2D { int32_t(fbSize.width), int32_t(fbSize.height) };
     m_state.om.renderAreaHi = VkOffset2D { 0, 0 };
+    m_state.om.renderLayered = lateClearCount > 0u;
 
     if (lateClearCount)
       std::swap(m_state.om.renderAreaLo, m_state.om.renderAreaHi);
 
-    // On drivers that don't natively support secondary command buffers, only use
-    // them to enable MSAA resolve attachments. Also ignore render passes with only
-    // one color attachment here since those tend to only have a small number of
-    // draws and we are almost certainly going to use the output anyway.
-    bool useSecondaryCmdBuffer = false;
-
-    if (m_device->perfHints().preferRenderPassOps) {
-      useSecondaryCmdBuffer = renderingInheritance.rasterizationSamples > VK_SAMPLE_COUNT_1_BIT
-                           || depthStencilAspects || colorInfoCount > 1u || !hasMipmappedRt;
-    }
+    // Some hardware will not work properly if we don't trim the render area,
+    // so unconditionally use secondary command buffers on all tiler setups.
+    bool useSecondaryCmdBuffer = m_device->perfHints().preferRenderPassOps;
 
     if (useSecondaryCmdBuffer) {
       // Begin secondary command buffer on tiling GPUs so that subsequent
@@ -6782,26 +6798,26 @@ namespace dxvk {
       if (pipelineInfo.type == DxvkGraphicsPipelineType::BasePipeline) {
         // For pipelines created from graphics pipeline libraries, we need to
         // apply a bunch of dynamic state that is otherwise static or unused
-        if (!m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasRasterizerDiscard)) {
-          m_flags.set(DxvkContextFlag::GpDynamicDepthBias,
-                      DxvkContextFlag::GpDynamicDepthTest,
-                      DxvkContextFlag::GpDynamicStencilTest);
+        m_flags.set(DxvkContextFlag::GpDynamicDepthBias,
+                    DxvkContextFlag::GpDynamicDepthTest,
+                    DxvkContextFlag::GpDynamicStencilTest);
 
-          if (m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable)
-            m_flags.set(DxvkContextFlag::GpDynamicDepthClip);
+        if (m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable)
+          m_flags.set(DxvkContextFlag::GpDynamicDepthClip);
 
-          if (m_device->features().core.features.depthBounds)
-            m_flags.set(DxvkContextFlag::GpDynamicDepthBounds);
+        if (m_device->features().core.features.depthBounds)
+          m_flags.set(DxvkContextFlag::GpDynamicDepthBounds);
 
-          if (m_device->features().extExtendedDynamicState3.extendedDynamicState3RasterizationSamples
-          && m_device->features().extExtendedDynamicState3.extendedDynamicState3SampleMask
-          && m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasSampleRateShading))
-            m_flags.set(DxvkContextFlag::GpDynamicMultisampleState);
-
-          if (m_device->canUseSampleLocations(0u))
-            m_flags.set(DxvkContextFlag::GpDynamicSampleLocations);
+        if (m_device->features().extExtendedDynamicState3.extendedDynamicState3RasterizationSamples
+         && m_device->features().extExtendedDynamicState3.extendedDynamicState3SampleMask) {
+          m_flags.set(m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasSampleRateShading)
+            ? DxvkContextFlag::GpDynamicMultisampleState
+            : DxvkContextFlag::GpDirtyMultisampleState);
         }
-      } else if (!m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasRasterizerDiscard)) {
+
+        if (m_device->canUseSampleLocations(0u))
+          m_flags.set(DxvkContextFlag::GpDynamicSampleLocations);
+      } else {
         // Conditionally set up dynamic state based on pipeline state.
         // Must match DxvkGraphicsPipelineDynamicState behaviour exactly.
         if (m_device->features().core.features.depthBounds) {
@@ -6823,7 +6839,7 @@ namespace dxvk {
         m_flags.set(m_state.gp.state.useDynamicStencilTest()
           ? DxvkContextFlags(DxvkContextFlag::GpDynamicStencilTest)
           : DxvkContextFlags(DxvkContextFlag::GpDirtyStencilTest,
-                            DxvkContextFlag::GpDirtyStencilRef));
+                             DxvkContextFlag::GpDirtyStencilRef));
 
         // Dirty state that is never dynamic for optimized pipelines
         if (m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable)
@@ -6888,6 +6904,11 @@ namespace dxvk {
       if (layout->usesSamplerHeap())
         updateSamplerSet<VK_PIPELINE_BIND_POINT_GRAPHICS>(layout);
     }
+
+    // Need to account for layered rendering after the render pass was
+    // actually begun, since binding the framebuffer resets this state.
+    if (m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasLayerExport))
+      m_state.om.renderLayered = VK_TRUE;
 
     m_flags.clr(DxvkContextFlag::GpDirtyPipelineState);
     return true;
@@ -7898,7 +7919,7 @@ namespace dxvk {
           std::min(scissor.extent.height, uint32_t(hi.y - lo.y)) };
 
         // Extend render area based on the final scissor rect
-        adjustRenderArea(dst);
+        adjustRenderArea(dst, false);
       }
 
       m_cmd->cmdSetViewport(m_state.vp.viewportCount, m_state.vp.viewports.data());
@@ -10670,6 +10691,22 @@ namespace dxvk {
   }
 
 
+  void DxvkContext::beginFrameCapture() {
+    if (m_features.test(DxvkContextFeature::DebugUtils)) {
+      m_cmd->cmdInsertDebugUtilsLabel(DxvkCmdBuffer::SdmaBarriers,
+        vk::makeLabel(0, "capture-marker,begin_capture"));
+    }
+  }
+
+
+  void DxvkContext::endFrameCapture() {
+    if (m_features.test(DxvkContextFeature::DebugUtils)) {
+      m_cmd->cmdInsertDebugUtilsLabel(DxvkCmdBuffer::ExecBuffer,
+        vk::makeLabel(0, "capture-marker,end_capture"));
+    }
+  }
+
+
   bool DxvkContext::formatsAreBufferCopyCompatible(
           VkFormat                  imageFormat,
           VkFormat                  bufferFormat) {
@@ -10884,6 +10921,36 @@ namespace dxvk {
     // Unconditionally track for writing to not bother the caller with it.
     m_cmd->track(m_scratchBuffer, DxvkAccess::Write);
     return slice;
+  }
+
+
+  std::pair<uint64_t, uint64_t> DxvkContext::parseFrameCaptureEnv() {
+    auto string = env::getEnvVar("DXVK_CAPTURE_FRAMES");
+
+    if (string.empty())
+      return std::make_pair(0u, 0u);
+
+    try {
+      size_t index = 0u;
+
+      uint64_t first = std::stoull(string, &index);
+      uint64_t count = 1u;
+
+      if (index < string.size()) {
+        if (string[index] != ':')
+          return std::make_pair(0u, 0u);
+
+        count = std::stoull(string.substr(index + 1u, std::string::npos));
+      }
+
+      return std::make_pair(first, first + count);
+    } catch (const std::invalid_argument& e) {
+      Logger::err(e.what());
+      return std::make_pair(0u, 0u);
+    } catch (const std::out_of_range& e) {
+      Logger::err(e.what());
+      return std::make_pair(0u, 0u);
+    }
   }
 
 }

@@ -13,6 +13,7 @@
 
 #include "../wsi/wsi_window.h"
 #include "../wsi/wsi_monitor.h"
+#include "../util/util_hotpatch.h"
 
 namespace dxvk {
   
@@ -93,15 +94,18 @@ namespace dxvk {
     
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() final;
 
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE Present(
             UINT                      SyncInterval,
             UINT                      Flags) final;
     
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE Present1(
             UINT                      SyncInterval,
             UINT                      PresentFlags,
       const DXGI_PRESENT_PARAMETERS*  pPresentParameters) final;
 
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE ResizeBuffers(
             UINT                      BufferCount,
             UINT                      Width,
@@ -109,6 +113,7 @@ namespace dxvk {
             DXGI_FORMAT               NewFormat,
             UINT                      SwapChainFlags) final;
     
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(
             UINT                      BufferCount,
             UINT                      Width,
@@ -118,9 +123,11 @@ namespace dxvk {
       const UINT*                     pCreationNodeMask,
             IUnknown* const*          ppPresentQueue) final;
 
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE ResizeTarget(
       const DXGI_MODE_DESC*           pNewTargetParameters) final;
     
+    DXVK_HOTPATCHABLE
     HRESULT STDMETHODCALLTYPE SetFullscreenState(
             BOOL                      Fullscreen,
             IDXGIOutput*              pTarget) final;
