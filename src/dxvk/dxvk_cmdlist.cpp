@@ -63,33 +63,100 @@ namespace dxvk {
           uint64_t              frameId) {
     auto vk = device->vkd();
 
-    VkLatencySubmissionPresentIdNV latencyInfo = { VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV };
-    latencyInfo.presentID = frameId;
-
-    VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
-
-    if (!m_semaphoreWaits.empty()) {
-      submitInfo.waitSemaphoreInfoCount = m_semaphoreWaits.size();
-      submitInfo.pWaitSemaphoreInfos = m_semaphoreWaits.data();
-    }
-
-    if (!m_commandBuffers.empty()) {
-      submitInfo.commandBufferInfoCount = m_commandBuffers.size();
-      submitInfo.pCommandBufferInfos = m_commandBuffers.data();
-    }
-
-    if (!m_semaphoreSignals.empty()) {
-      submitInfo.signalSemaphoreInfoCount = m_semaphoreSignals.size();
-      submitInfo.pSignalSemaphoreInfos = m_semaphoreSignals.data();
-    }
-
-    if (frameId && device->features().nvLowLatency2)
-      latencyInfo.pNext = std::exchange(submitInfo.pNext, &latencyInfo);
-
     VkResult vr = VK_SUCCESS;
 
-    if (!this->isEmpty())
-      vr = vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (!this->isEmpty()) {
+      bool useSubmit2 = device->config().useQueueSubmit2 == Tristate::True ||
+        (device->config().useQueueSubmit2 == Tristate::Auto &&
+         device->features().vk13.synchronization2 &&
+         !device->config().forceQueueSubmit &&
+         vk->vkQueueSubmit2 != nullptr);
+
+      if (useSubmit2) {
+        VkLatencySubmissionPresentIdNV latencyInfo = { VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV };
+        latencyInfo.presentID = frameId;
+
+        VkSubmitInfo2 submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+
+        if (!m_semaphoreWaits.empty()) {
+          submitInfo.waitSemaphoreInfoCount = m_semaphoreWaits.size();
+          submitInfo.pWaitSemaphoreInfos = m_semaphoreWaits.data();
+        }
+
+        if (!m_commandBuffers.empty()) {
+          submitInfo.commandBufferInfoCount = m_commandBuffers.size();
+          submitInfo.pCommandBufferInfos = m_commandBuffers.data();
+        }
+
+        if (!m_semaphoreSignals.empty()) {
+          submitInfo.signalSemaphoreInfoCount = m_semaphoreSignals.size();
+          submitInfo.pSignalSemaphoreInfos = m_semaphoreSignals.data();
+        }
+
+        if (frameId && device->features().nvLowLatency2)
+          latencyInfo.pNext = std::exchange(submitInfo.pNext, &latencyInfo);
+
+        vr = vk->vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
+      } else {
+        small_vector<VkSemaphore, 4> waitSemaphores;
+        small_vector<VkPipelineStageFlags, 4> waitDstStageMasks;
+        small_vector<uint64_t, 4> waitValues;
+        bool hasTimelineWait = false;
+
+        for (const auto& wait : m_semaphoreWaits) {
+          waitSemaphores.push_back(wait.semaphore);
+          waitDstStageMasks.push_back(VkPipelineStageFlags(wait.stageMask));
+          waitValues.push_back(wait.value);
+          if (wait.value != 0)
+            hasTimelineWait = true;
+        }
+
+        small_vector<VkCommandBuffer, 4> commandBuffers;
+        for (const auto& cb : m_commandBuffers)
+          commandBuffers.push_back(cb.commandBuffer);
+
+        small_vector<VkSemaphore, 4> signalSemaphores;
+        small_vector<uint64_t, 4> signalValues;
+        bool hasTimelineSignal = false;
+
+        for (const auto& sig : m_semaphoreSignals) {
+          signalSemaphores.push_back(sig.semaphore);
+          signalValues.push_back(sig.value);
+          if (sig.value != 0)
+            hasTimelineSignal = true;
+        }
+
+        VkTimelineSemaphoreSubmitInfo timelineInfo = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+        if (hasTimelineWait || hasTimelineSignal) {
+          timelineInfo.waitSemaphoreValueCount = waitValues.size();
+          timelineInfo.pWaitSemaphoreValues = waitValues.data();
+          timelineInfo.signalSemaphoreValueCount = signalValues.size();
+          timelineInfo.pSignalSemaphoreValues = signalValues.data();
+        }
+
+        VkSubmitInfo legacySubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        if (hasTimelineWait || hasTimelineSignal)
+          legacySubmitInfo.pNext = &timelineInfo;
+
+        if (!waitSemaphores.empty()) {
+          legacySubmitInfo.waitSemaphoreCount = waitSemaphores.size();
+          legacySubmitInfo.pWaitSemaphores = waitSemaphores.data();
+          legacySubmitInfo.pWaitDstStageMask = waitDstStageMasks.data();
+        }
+
+        if (!commandBuffers.empty()) {
+          legacySubmitInfo.commandBufferCount = commandBuffers.size();
+          legacySubmitInfo.pCommandBuffers = commandBuffers.data();
+        }
+
+        if (!signalSemaphores.empty()) {
+          legacySubmitInfo.signalSemaphoreCount = signalSemaphores.size();
+          legacySubmitInfo.pSignalSemaphores = signalSemaphores.data();
+        }
+
+        vr = vk->vkQueueSubmit(queue, 1, &legacySubmitInfo, VK_NULL_HANDLE);
+      }
+    }
 
     this->reset();
     return vr;

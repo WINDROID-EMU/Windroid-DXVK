@@ -86,6 +86,13 @@ namespace dxvk {
     /// Enable descriptor update templates
     bool enableDescriptorUpdateTemplates = env::is32BitHostPlatform();
 
+    /// Force classic vkQueueSubmit instead of vkQueueSubmit2
+    /// for compatibility with Wine, Box64 and mobile Turnip drivers.
+    bool forceQueueSubmit = true;
+
+    /// Control vkQueueSubmit2 usage
+    Tristate useQueueSubmit2 = Tristate::Auto;
+
     /// Device name
     std::string deviceFilter;
   };

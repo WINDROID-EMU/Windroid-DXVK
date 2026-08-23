@@ -26,6 +26,8 @@ namespace dxvk {
     deviceFilter          = config.getOption<std::string>("dxvk.deviceFilter",        "");
     lowerSinCos           = config.getOption<Tristate>("dxvk.lowerSinCos",            Tristate::Auto);
     tilerMode             = config.getOption<Tristate>("dxvk.tilerMode",              Tristate::Auto);
+    forceQueueSubmit      = config.getOption<bool>    ("dxvk.forceQueueSubmit",       true);
+    useQueueSubmit2       = config.getOption<Tristate>("dxvk.useQueueSubmit2",        Tristate::Auto);
 
     auto budget = config.getOption<int32_t>("dxvk.maxMemoryBudget", 0);
     maxMemoryBudget = VkDeviceSize(std::max(budget, 0)) << 20u;
