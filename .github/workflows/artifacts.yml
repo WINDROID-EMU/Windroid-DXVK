@@ -17,14 +17,18 @@ jobs:
     - name: Setup problem matcher
       uses: Joshua-Ashton/gcc-problem-matcher@master
 
+    - name: Setup MinGW and Build Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64 g++-mingw-w64-i686 meson ninja-build glslang-tools
+
     - name: Build release
       id: build-release
-      uses: Joshua-Ashton/arch-mingw-github-action@v8
-      with:
-        command: |
-          export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
-          ./package-release.sh ${VERSION_NAME} build --no-package
-          echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
+      shell: bash
+      run: |
+        export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
+        ./package-release.sh ${VERSION_NAME} build --no-package
+        echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
 
     - name: Upload artifacts
       id: upload-artifacts
