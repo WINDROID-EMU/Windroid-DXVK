@@ -12,7 +12,7 @@ jobs:
     steps:
     - name: Checkout code
       id: checkout-code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 0
@@ -25,22 +25,24 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64 g++-mingw-w64-i686 meson ninja-build glslang-tools
 
-    - name: Build release and RAT package
+    - name: Build release, TAR.GZ and RAT package
       id: build-release
       shell: bash
       run: |
         export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
         ./package-release.sh ${VERSION_NAME} build --no-package
         ./package-rat.sh ${VERSION_NAME} build
+        tar -czf "build/dxvk-${VERSION_NAME}.tar.gz" -C build "dxvk-${VERSION_NAME}"
         echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
 
     - name: Upload artifacts
       id: upload-artifacts
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v4
       with:
         name: dxvk-win-${{ env.VERSION_NAME }}
         path: |
           build/dxvk-${{ env.VERSION_NAME }}
+          build/*.tar.gz
           build/*.rat
         if-no-files-found: error
 
@@ -53,7 +55,7 @@ jobs:
     steps:
     - name: Checkout code
       id: checkout-code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 0
@@ -71,45 +73,28 @@ jobs:
 
     - name: Upload artifacts
       id: upload-artifacts
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v4
       with:
         name: dxvk-native-${{ env.VERSION_NAME }}
         path: build/dxvk-native-${{ env.VERSION_NAME }}.tar.gz
         if-no-files-found: error
 
-  merge-artifacts:
-    runs-on: ubuntu-latest
-    needs: [artifacts-mingw-w64, artifacts-steamrt-sniper]
-    steps:
-      - name: Get version
-        id: get-version
-        shell: bash
-        run: |
-          echo "VERSION_NAME=${GITHUB_REF##*/}-${GITHUB_SHA##*/}" >> $GITHUB_ENV
-
-      - name: Merge Artifacts
-        uses: actions/upload-artifact/merge@v7
-        with:
-          name: dxvk-${{ env.VERSION_NAME }}
-          pattern: dxvk*
-          delete-merged: true
-
   release:
     runs-on: ubuntu-latest
-    needs: [artifacts-mingw-w64, artifacts-steamrt-sniper, merge-artifacts]
+    needs: [artifacts-mingw-w64, artifacts-steamrt-sniper]
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dxvk-${{ env.VERSION_NAME }}
+          pattern: dxvk-*
           path: release-files
-        continue-on-error: true
+          merge-multiple: true
 
       - name: Setup Release Variables
         id: release-vars
@@ -133,7 +118,8 @@ jobs:
             ### 🎮 Windroid DXVK Release
             
             - **Compatibilidade:** Suporte e correção para drivers Turnip 26xx no Android / Wine / Box64 (fallback automático para `vkQueueSubmit`).
-            - **Instalação no Emulador:** Baixe o arquivo `.rat` anexado e instale diretamente no **Windroid Emulator**.
+            - **Pacote Padrão DXVK (`dxvk-*.tar.gz`):** Contém os binários x32 e x64 (`d3d8.dll`, `d3d9.dll`, `d3d10core.dll`, `d3d11.dll`, `dxgi.dll`) no formato oficial upstream.
+            - **Instalação no Emulador (`.rat`):** Baixe o arquivo `.rat` anexado e instale diretamente no **Windroid Emulator**.
           files: |
             release-files/**/*.rat
             release-files/**/*.tar.gz
